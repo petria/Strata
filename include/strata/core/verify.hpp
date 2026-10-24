@@ -124,6 +124,9 @@ public:
     /// graph found no VRAM - nothing else changed, and a smaller window can run instead.  A layer split's stages
     /// keep the capture on first use (true, nothing done).
     bool prepare(int T, bool& no_vram, std::string& err);
+    // Opt-in network prefix stage. Empty callbacks leave the local execution path unchanged.
+    std::function<bool(int, const int32_t*, int64_t, std::string&)> before_window;
+    std::function<bool(int, std::string&)> after_commit;
     /// Diagnostics: row `t` of the last window's head logits (n_vocab floats) to the host. Valid after run().
     bool copy_logits(int t, float* host) const;
     int64_t vocab() const { return next_ ? next_->vocab() : n_vocab_; }
@@ -229,8 +232,7 @@ public:
     /// Keep the first `n_keep` (1..T) tokens of the last window; advances `ss.ple_prev` by them.
     bool commit(int n_keep, std::string& err);
 
-    // ================================ SEVERAL SEQUENCES IN ONE WINDOW ================================
-    //
+    // ================================ SEVERAL SEQUENCES IN ONE WINDOW =========================    //
     // A batch window holds S INDEPENDENT sequences, one token each: row s is slot s, at slot s's own position,
     // reading and writing slot s's own state (GDN recurrence and conv history, QSA K/V and indexer, PLE history),
     // which lives in `slots[s]` - a session carved like this verifier's own (same layer range, same max_cells).

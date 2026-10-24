@@ -23,6 +23,7 @@
 #include <future>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace strata::core { class PeerExperts; }
 namespace strata::kernels::cpu { class ExpertPool; }
@@ -258,6 +259,11 @@ public:
     /// The vision path: HOST rows (n_embd floats) indexed by absolute position, read in place of the token
     /// embedding where non-null (an image's <|image_pad|> cells).  Null (default): every position embeds its token.
     const float* const* embd_rows = nullptr;
+    // FP32 [T,hc*n_embd] network hand-off; empty by default. Invoked on this stage's host thread.
+    std::function<bool(const int64_t*, int64_t, int64_t, int64_t, std::vector<float>&, std::string&)> input_chunk;
+    std::function<bool(std::string&)> drain_input;
+    bool external_stage_output = false; // non-final stage exports via on_chunk rather than a local successor
+    bool external_stage_input = false;
 
     /// LAYER SPLIT (multi-GPU): this prompt path runs layers [layer_begin, layer_end) (-1: to the last) on the
     /// device `init` runs on.  A stage that does not start at layer 0 reads each chunk's residual rows from the
@@ -319,6 +325,7 @@ public:
     }
 
 private:
+    std::vector<float> input_rows_;
     static uint64_t bytes_needed_impl(const core::ModelGeometry& g, const core::SessionState& ss, int64_t chunk,
                                       bool owned_pages, bool src);
     kernels::cpu::ExpertPool* cpu_pool_ = nullptr;   ///< set_cpu_pool

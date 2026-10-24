@@ -180,6 +180,7 @@ inline std::vector<T> copy_beating(const std::vector<T>& src) {
 
 inline ConversationCheckpoint copy_checkpoint_beating(const ConversationCheckpoint& c) {
     ConversationCheckpoint o;
+    o.rpc_handle = c.rpc_handle;
     o.ids = copy_beating(c.ids);
     o.imgs = copy_beating(c.imgs);
     o.gdn = copy_beating(c.gdn);

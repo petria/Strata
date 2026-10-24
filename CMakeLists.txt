@@ -101,6 +101,16 @@ if(STRATA_HIP_GFX906)
   set(STRATA_ENABLE_CUDA ON CACHE BOOL "" FORCE)
 endif()
 option(STRATA_ENABLE_HIP "Build the HIP targets for wave32 AMD GPUs (gfx1100, gfx1201; gfx1012/gfx1030 unvalidated)" OFF)
+option(STRATA_ENABLE_STAGE_RPC "Experimental Linux CUDA network layer stages (mutual TLS)" OFF)
+if(STRATA_ENABLE_STAGE_RPC)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT STRATA_ENABLE_CUDA OR STRATA_HIP_GFX906)
+    message(FATAL_ERROR "Stage RPC v1 requires Linux and STRATA_ENABLE_CUDA=ON")
+  endif()
+  find_package(OpenSSL 3 REQUIRED)
+  add_library(strata_stage_rpc STATIC src/rpc/transport.cpp src/rpc/client.cpp)
+  target_include_directories(strata_stage_rpc PUBLIC include)
+  target_link_libraries(strata_stage_rpc PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+endif()
 option(STRATA_PREFILL_MMQ "Build the optional GGML MMQ prefill path for HIP" OFF)
 # The community-made AMD changes (include/strata/core/amd_community.hpp): on by default.  This option is the build half of the one
 # switch STRATA_AMD_COMMUNITY_TUNING: OFF compiles the portable signed-byte dot for gfx1010 again (the SDWA sequence of #4855).
@@ -393,6 +403,29 @@ target_link_libraries(strata-plan PRIVATE strata_plan)
 # ---- strata_core (GPU runtime) ---------------------------------------------
 # Only built when a GPU backend is on, so the Phase 1 targets keep working without a toolkit.
 strata_gpu_engine()
+
+if(STRATA_ENABLE_STAGE_RPC)
+  target_sources(strata PRIVATE src/rpc/stage_worker.cpp)
+  target_link_libraries(strata PRIVATE strata_stage_rpc)
+  target_compile_definitions(strata PRIVATE STRATA_HAS_STAGE_RPC=1)
+  # The two architecture-specific builds must identify the same complete runtime source tree.
+  file(GLOB_RECURSE _stage_sources CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    src/*.cpp src/*.cu src/*.hpp src/*.h src/*.cuh include/*.hpp include/*.h serve/*.py cmake/*.cmake
+    third_party/strata-ggml/ggml/src/*.c third_party/strata-ggml/ggml/src/*.cpp
+    third_party/strata-ggml/ggml/src/*.cu third_party/strata-ggml/ggml/src/*.h
+    third_party/strata-ggml/ggml/src/*.hpp third_party/strata-ggml/ggml/src/*.cuh
+    third_party/strata-ggml/ggml/include/*.h third_party/strata-ggml/ggml/include/*.hpp
+    third_party/strata-ggml/ggml/CMakeLists.txt third_party/strata-ggml/CMakeLists.txt)
+  list(APPEND _stage_sources CMakeLists.txt)
+  set(_stage_source_id "stage-v1;version=${PROJECT_VERSION};portable=${STRATA_PORTABLE};isa=${STRATA_ISA_FLOOR};mmq_kquants=${STRATA_MMQ_KQUANTS};q6k=${STRATA_Q6K_EXPERTS};orca_mmq=${STRATA_ORCA_Q4KS_MMQ};")
+  foreach(_f IN LISTS _stage_sources)
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _stage_hash)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
+    string(APPEND _stage_source_id "${_f}:${_stage_hash};")
+  endforeach()
+  string(SHA256 _stage_source_id "${_stage_source_id}")
+  target_compile_definitions(strata PRIVATE STRATA_RPC_SOURCE_ID="${_stage_source_id}")
+endif()
 
 strata_cpu_kernels()
 

@@ -1,4 +1,9 @@
 #include "strata/core/logit_bias.hpp"
+#if defined(STRATA_HAS_STAGE_RPC)
+#include "strata/rpc/stage_worker.hpp"
+#include "strata/rpc/client.hpp"
+#include "strata/rpc/prefill_client.hpp"
+#endif
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
 // THE DRIVER, and the first program in this project that answers a question.  Everything below it is a
@@ -600,6 +605,9 @@ bool resident_stage_swaps(strata::core::FileExpertSource& src, const std::vector
 }
 
 struct Options {
+    std::string rpc_stage, rpc_listen, rpc_allow_peer, rpc_ca, rpc_cert, rpc_key, rpc_model_id;
+    int64_t rpc_prefix_layers = 0;
+    int rpc_timeout = 300;
     std::string pack = "pack/full";
     std::vector<int64_t> tokens;      // the prompt, PRE-TOKENIZED
     int64_t max_new = 16;
@@ -1033,6 +1041,13 @@ void usage() {
                  "  --ple-gguf PATH      required PLE table (original second GGUF shard); with --native, the model's\n"
                  "                       shard that holds per_layer_token_embd.weight when not given\n"
                  "  --no-ple             explicit diagnostic ablation of the PLE layer\n"
+#if defined(STRATA_HAS_STAGE_RPC)
+                 "  --rpc-stage IP:PORT  Experimental Linux CUDA prefix stage (build with -DSTRATA_ENABLE_STAGE_RPC=ON).\n"
+                 "  --rpc-prefix-layers K  Worker owns [0,K); coordinator owns [K,48). K=4..44, divisible by four.\n"
+                 "  --rpc-listen IP:PORT --rpc-allow-peer IP  Worker role, private IPv4 bind only.\n"
+                 "  --rpc-ca FILE --rpc-cert FILE --rpc-key FILE  Required mutual TLS credentials.\n"
+                 "  --rpc-model-id SHA256 --rpc-timeout SECONDS  Artifact identity and bounded operation timeout.\n"
+#endif
                  "  --ple-io direct|mmap|ram  n-gram table reads (plan v0.3 P2). direct (default): unbuffered SSD\n"
                  "                       reads, the table never enters RAM or the file cache; mmap: A/B arm;\n"
                  "                       ram: the whole table locked in RAM at start (VirtualLock on Windows,\n"
@@ -2208,6 +2223,11 @@ private:
 // just the checkpoints that are prefixes of the tokens the session holds now.
 using ImgKey = strata::core::ConversationImageKey;
 using ConvCheckpoint = strata::core::ConversationCheckpoint;
+#if defined(STRATA_HAS_STAGE_RPC)
+strata::rpc::Client* active_rpc = nullptr;
+const strata::core::SessionState* rpc_session = nullptr;
+bool rpc_missing_checkpoint = false;
+#endif
 
 uint64_t fnv1a(const void* data, size_t n, uint64_t h = 1469598103934665603ull) {
     const uint8_t* p = (const uint8_t*) data;
@@ -2229,6 +2249,11 @@ ConvStateSizes conv_state_sizes(const strata::core::ModelGeometry& g, const stra
 /// Copies the running state out (this session's carve only).  The caller has synchronized the device.
 bool checkpoint_save(ConvCheckpoint& c, const strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
+#if defined(STRATA_HAS_STAGE_RPC)
+    if (active_rpc && rpc_session == &ss && !active_rpc->checkpoint(c.ids.size(), c.rpc_handle, error)) {
+        std::fprintf(stderr, "strata serve: RPC checkpoint save: %s\n", error.c_str()); return false;
+    }
+#endif
     if (strata::core::conversation_checkpoint_save(c, ss, g, error)) return true;
     std::fprintf(stderr, "strata serve: checkpoint save: %s\n", error.c_str());   // the caller's ERR has no reason
     return false;
@@ -2246,6 +2271,12 @@ bool checkpoint_failure_is_survivable() {
 /// Puts a checkpoint's running state back; the positional cells below it are the caller's to guarantee.
 bool checkpoint_restore(const ConvCheckpoint& c, strata::core::SessionState& ss, const strata::core::ModelGeometry& g) {
     std::string error;
+#if defined(STRATA_HAS_STAGE_RPC)
+    rpc_missing_checkpoint = false;
+    if (active_rpc && rpc_session == &ss && !active_rpc->restore(c.rpc_handle, rpc_missing_checkpoint, error)) {
+        std::fprintf(stderr, "strata serve: RPC checkpoint restore: %s\n", error.c_str()); return false;
+    }
+#endif
     if (strata::core::conversation_checkpoint_restore(c, ss, g, error)) return true;
     std::fprintf(stderr, "strata serve: checkpoint restore: %s\n", error.c_str());
     return false;
@@ -3276,6 +3307,12 @@ static int engine_main(int argc, char** argv) {   // main() is at the end of thi
 #else
 int main(int argc, char** argv) {
 #endif
+#if defined(STRATA_HAS_STAGE_RPC)
+    if (argc == 2 && std::strcmp(argv[1], "--rpc-build-info") == 0) {
+        std::printf("stage-v1 %s\n", STRATA_RPC_SOURCE_ID);
+        return 0;
+    }
+#endif
     // **UNBUFFERED, BECAUSE THE INTERESTING OUTPUT IS THE OUTPUT BEFORE A CRASH.**  `stdout` redirected to a
     // pipe or a file is block-buffered, so a program that dies loses every line it had already printed - which
     // turns "it crashed at step 7" into "it crashed somewhere", and the difference is a debugging session.
@@ -3400,6 +3437,15 @@ int main(int argc, char** argv) {
         if (a == "--help" || a == "-h") { usage(); return 0; }
         else if (a == "--gpu") { (void) next("--gpu"); }   // applied at startup, before any CUDA call
         else if (a == "--pack") o.pack = next("--pack");
+        else if (a == "--rpc-stage") o.rpc_stage = next("--rpc-stage");
+        else if (a == "--rpc-listen") o.rpc_listen = next("--rpc-listen");
+        else if (a == "--rpc-allow-peer") o.rpc_allow_peer = next("--rpc-allow-peer");
+        else if (a == "--rpc-ca") o.rpc_ca = next("--rpc-ca");
+        else if (a == "--rpc-cert") o.rpc_cert = next("--rpc-cert");
+        else if (a == "--rpc-key") o.rpc_key = next("--rpc-key");
+        else if (a == "--rpc-model-id") o.rpc_model_id = next("--rpc-model-id");
+        else if (a == "--rpc-prefix-layers") o.rpc_prefix_layers = std::atoll(next("--rpc-prefix-layers"));
+        else if (a == "--rpc-timeout") o.rpc_timeout = std::atoi(next("--rpc-timeout"));
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }
             std::string e;
@@ -3985,6 +4031,43 @@ int main(int argc, char** argv) {
         } else (void) cudaGetLastError();
     }
 #endif
+    const bool rpc_worker = !o.rpc_listen.empty();
+    const bool rpc_enabled = rpc_worker || !o.rpc_stage.empty();
+    const int64_t rpc_lb = rpc_enabled && !rpc_worker ? o.rpc_prefix_layers : 0;
+    const int64_t rpc_le = rpc_enabled && rpc_worker ? o.rpc_prefix_layers : 48;
+    if (rpc_enabled) {
+#if !defined(STRATA_HAS_STAGE_RPC)
+        std::fprintf(stderr, "strata generate: rebuild with -DSTRATA_ENABLE_STAGE_RPC=ON\n"); return 2;
+#endif
+        bool other_cache = false;
+        for (int n : o.expert_cache_remote) other_cache = other_cache || n > 0;
+        if (!o.serve || (!o.rpc_stage.empty() && rpc_worker) || o.rpc_prefix_layers < 4 || o.rpc_prefix_layers >= 48 ||
+            o.rpc_prefix_layers % 4 || o.rpc_model_id.size() != 64 ||
+            !std::all_of(o.rpc_model_id.begin(), o.rpc_model_id.end(), [](char c) {
+                return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+            }) || o.rpc_ca.empty() || o.rpc_cert.empty() ||
+            o.rpc_key.empty() || (rpc_worker && o.rpc_allow_peer.empty()) || o.rpc_timeout < 1 || o.rpc_timeout > 3600 ||
+            !o.layer_split.empty() || o.batch != 0 || o.peer_device >= 0 || other_cache || o.kv_resident > 0 ||
+            o.kv_grow || o.vram_elastic || o.pipeline_windows > 0 ||
+            !o.cvec_files.empty() || o.native_preset.empty() || !o.mmap_experts || !o.resident_cpu_experts ||
+            std::getenv("STRATA_KV_GROW") || std::getenv("STRATA_PREFILL_HELP") ||
+            std::getenv("STRATA_RESIDENT_SSD_FALLBACK")) {
+            std::fprintf(stderr, "strata generate: stage RPC needs --serve, native resident experts, role TLS credentials, "
+                "a 64-character model digest, and a split divisible by four in [4,44]; batch/helper/local multi-GPU, "
+                "elastic or streamed KV, cvec and disk sessions are not supported in v1\n"); return 2;
+        }
+        if (rpc_worker && !o.mtp.empty()) { std::fprintf(stderr, "strata generate: MTP belongs on the coordinator\n"); return 2; }
+        // Own prompt buffers avoid lending an expert whose only RAM copy belongs to the other host.
+        o.no_prefill_borrow = true;
+        if (o.prefill_auto || o.prefill_chunk <= 0) o.prefill_chunk = 2048;
+        o.prefill_auto = false;
+        if (o.prefill_chunk > 8192) { std::fprintf(stderr, "strata generate: RPC chunks are bounded at 8192 rows\n"); return 2; }
+        o.pipeline_windows = 0;
+        std::fprintf(stderr, "strata generate: experimental stage RPC %s, owns layers [%lld,%lld)\n",
+            rpc_worker ? "worker" : "coordinator", (long long) rpc_lb, (long long) rpc_le);
+    } else if (o.rpc_prefix_layers || !o.rpc_model_id.empty() || !o.rpc_ca.empty() || !o.rpc_cert.empty() || !o.rpc_key.empty()) {
+        std::fprintf(stderr, "strata generate: RPC options require --rpc-stage or --rpc-listen\n"); return 2;
+    }
     strata::core::set_coupled_draft(o.coupled_draft);
     {   // --host-core / STRATA_HOST_CORE, before the pool and the session pin any thread
         std::string hc = o.host_core;
@@ -5186,6 +5269,11 @@ int main(int argc, char** argv) {
                              "projections are used\n");
     const bool hc_q8 = hc_req8_env && !multi_gpu;
     if (hc_q8) strata::core::WeightTable::hc_q8_names(g.n_layers, skip);
+    if (rpc_enabled) {
+        add_foreign(rpc_lb, rpc_le, skip, false);
+        strata::core::NativeDense::set_layer_range((int) rpc_lb, (int) rpc_le);
+        if (rpc_worker) skip.insert("output.weight");
+    }
     uint64_t pool_bytes = 0;
     if (!strata::core::WeightTable::pool_bytes(o.pack, pool_bytes, err, skip.empty() ? nullptr : &skip)) {
         std::fprintf(stderr, "strata generate: %s\n", err.c_str());
@@ -5978,6 +6066,12 @@ int main(int argc, char** argv) {
     // CUDA0's pairs in `profile` below).  Empty without --expert-profile-save.
     std::vector<std::pair<int32_t, int32_t>> profile_loaded;
     if (!o.expert_profile_save.empty()) profile_loaded = profile;
+    if (rpc_enabled) {
+        profile.erase(std::remove_if(profile.begin(), profile.end(), [&](const auto& pair) {
+            return pair.first < rpc_lb || pair.first >= rpc_le;
+        }), profile.end());
+        if (profile.empty()) { std::fprintf(stderr, "strata generate: RPC requires a ranked expert profile for its own layers\n"); return 2; }
+    }
     // ---- layer split across GPUs: "auto" places the split points by a cost model of one decode window, measured on
     // the 5080 + 3090 rig (bench/results/2026-09-29-layer-split):
     //   - every layer costs its GPU a time inversely proportional to SMs x clock (0.33 ms on an RTX 5080, 0.50 on a
@@ -6741,7 +6835,7 @@ int main(int argc, char** argv) {
     // fixed in llama.cpp: allocation sized by the whole model instead of the device's own work.
     {
         const strata::core::OnDevice on0(primary_device);   // STRATA_PRIMARY_DEVICE (upstream: a literal 0)
-        const int64_t hi0 = multi_gpu ? split_at[0] : -1;
+        const int64_t hi0 = rpc_enabled ? rpc_le : multi_gpu ? split_at[0] : -1;
         // the elastic K/V (--kv-grow, see kvg_ensure): one GPU, the whole K/V in VRAM (no streaming), a profiled cache
         // that can give slots up, and every expert in RAM for the CPU to compute the ones it gives up
         {
@@ -6761,11 +6855,11 @@ int main(int argc, char** argv) {
             strata::core::qsa_set_kv_elastic(on, iv != nullptr && std::atoll(iv) > 0 ? std::atoll(iv) : 16384);
             strata::core::ExpertCache::set_vmm(on);
         }
-        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, 0, hi0)) != cudaSuccess) {
+        if (cudaMalloc(&sbuf, strata::core::session_bytes(g, o.max_context, K, rpc_lb, hi0)) != cudaSuccess) {
             std::fprintf(stderr, "strata generate: session state allocation failed\n");
             return 1;
         }
-        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, 0, hi0) == 0) {
+        if (strata::core::session_init(g, o.max_context, K, sbuf, ss, rpc_lb, hi0) == 0) {
             std::fprintf(stderr, "strata generate: session_init failed\n");
             return 1;
         }
@@ -7311,7 +7405,7 @@ int main(int argc, char** argv) {
     if (wo == nullptr) { std::fprintf(stderr, "strata generate: output.weight is missing\n"); return 1; }
     const int64_t n_vocab = wo->ne1;
     strata::core::NativeHead native_head;
-    if (!o.native_head_gguf.empty() && !multi_gpu) {   // a layer split's head is on its last stage
+    if (!o.native_head_gguf.empty() && !multi_gpu && !rpc_worker) {   // a layer split's head is on its last stage
         const auto head_t0 = std::chrono::steady_clock::now();
         if (!native_head.load(o.native_head_shards, g.n_embd, n_vocab, err)) {
             std::fprintf(stderr, "strata generate: %s%s%s\n", err.c_str(), vram_free_note().c_str(), vram_batch_hint(err, o.batch).c_str());
@@ -10407,6 +10501,11 @@ int main(int argc, char** argv) {
         // (true of the single lend region only: the stage_lend_regions block below hands every part's
         // borrowed tail to the copy as well, so under a split the copy keeps a lend region per part again)
         std::vector<std::pair<int32_t, int32_t>> stage_pairs;
+        // Non-owned experts are excluded from this host's pinned complement, not transferred over RPC.
+        if (rpc_enabled)
+            for (int64_t l = 0; l < g.n_layers; ++l)
+                if (l < rpc_lb || l >= rpc_le)
+                    for (int64_t e = 0; e < g.n_expert; ++e) stage_pairs.emplace_back((int32_t) l, (int32_t) e);
         for (auto& st : stages)
             for (int64_t l = st->lb; l < st->le; ++l)
                 for (int64_t e = 0; e < g.n_expert; ++e)
@@ -11241,6 +11340,9 @@ int main(int argc, char** argv) {
                 }
             }
             if (multi_gpu) sp.set_stage(0, split_at[0], &stages[0]->sp);
+            if (rpc_enabled) {
+                sp.set_stage(rpc_lb, rpc_le, nullptr); sp.external_stage_output = rpc_worker; sp.external_stage_input = !rpc_worker;
+            }
             if (share_pool) sp.set_cpu_pool(&pool);
             int cur_dev = 0;
             cudaGetDevice(&cur_dev);   // the device this path is about to run on (dev -1: the current one)
@@ -11658,6 +11760,18 @@ int main(int argc, char** argv) {
         }
         ver.set_remote_expert_opt(remote_opt.get());
         if (pcie_balance() && n_stages == 1) ver.set_pcie_balance(&drive.d.pcie_model);
+#if defined(STRATA_HAS_STAGE_RPC)
+        float* rpc_hand_host = nullptr;
+        float* rpc_hand_device = nullptr;
+        if (rpc_enabled) {
+            const size_t bytes = size_t(strata::kernels::kVerifyMaxT * strata::core::Verifier::handoff_floats(g)) * sizeof(float);
+            if (cudaHostAlloc((void**) &rpc_hand_host, bytes, cudaHostAllocMapped | cudaHostAllocPortable) != cudaSuccess ||
+                cudaHostGetDevicePointer((void**) &rpc_hand_device, rpc_hand_host, 0) != cudaSuccess) {
+                std::fprintf(stderr, "strata serve: RPC mapped hand-off allocation failed\n"); return 1;
+            }
+            ver.set_stage(rpc_lb, rpc_le, rpc_worker ? nullptr : rpc_hand_device, rpc_worker ? rpc_hand_device : nullptr);
+        }
+#endif
         if (batch_mtp) ver.set_batch_graph_limit(64);   // --batch-mtp only: slot rotation makes many layouts (LRU); 0.1.39 keeps all
 #if defined(STRATA_HAVE_DFLASH2)
         if (use_df2) ver.set_taps(df2.tap_layers());
@@ -11875,6 +11989,74 @@ int main(int argc, char** argv) {
         // issue #31's thread dumps show the host stuck in that cudaMemcpyAsync on a driver lock for good.  The copy
         // kernel needs no host CUDA call there, and costs ~1-3% decode on IQ3_S (45.3 -> 44.8 tok/s, 8 requests).
         ver.set_pcie_mode(o.pcie_mode == "dma" ? 0 : o.pcie_mode == "direct" ? 1 : 2);
+#if defined(STRATA_HAS_STAGE_RPC)
+        const std::string rpc_identity = rpc_enabled ? std::string("stage-v1|") + STRATA_RPC_SOURCE_ID + "|" + o.rpc_model_id +
+            "|" + std::to_string(g.n_layers) + "|" + std::to_string(g.n_embd) + "|" + std::to_string(g.hc) +
+            "|" + std::to_string(g.n_expert) + "|" + std::to_string(K) + "|" + std::to_string(o.max_context) +
+            "|" + o.kv + "|" + std::to_string(o.rpc_prefix_layers) + "|" + std::to_string(o.prefill_chunk) +
+            "|" + std::to_string(o.spec) + "|" + std::to_string(o.vision) + "|" + o.rope_scaling +
+            "|" + std::to_string(o.rope_scale) + "|" + std::to_string(o.rope_freq_base) +
+            "|" + std::to_string(o.rope_freq_scale) + "|" + std::to_string(o.yarn_orig_ctx) +
+            "|" + std::to_string(o.yarn_ext_factor) + "|" + std::to_string(o.yarn_attn_factor) +
+            "|" + std::to_string(o.yarn_beta_fast) + "|" + std::to_string(o.yarn_beta_slow) : "";
+        strata::rpc::Security rpc_security{o.rpc_ca, o.rpc_cert, o.rpc_key,
+            rpc_worker ? "strata-stage-coordinator" : "strata-stage-worker", o.rpc_timeout};
+        strata::rpc::Client rpc_client;
+        strata::rpc::PrefillPipeline rpc_prefill(rpc_client, g.hc * g.n_embd, g.n_embd);
+        uint64_t rpc_window = 0;
+        std::vector<int32_t> rpc_pending;
+        // Inference owns this socket. Baseline/end snapshots, never per-token/dashboard polling.
+        auto report_rpc = [&](const char* phase) {
+            std::vector<uint8_t> b;
+            if (!rpc_client.call(strata::rpc::Op::stats, {}, b, err)) return false;
+            strata::rpc::Reader r(b);
+            const auto w = r.u64(), rows = r.u64(), accepted = r.u64(), ckbytes = r.u64();
+            const auto sent = r.u64(), received = r.u64(), us = r.u64();
+            const auto telemetry = r.string(65536);
+            if (!r.done()) { err = "malformed RPC worker metrics"; return false; }
+            const auto& local_pf = sp.stats();
+            std::printf("RPCMETRICS {\"phase\":\"%s\",\"client\":%s,\"worker\":{\"windows\":%llu,\"prefill_rows\":%llu,"
+                "\"accepted_rows\":%llu,\"checkpoint_bytes\":%llu,\"sent_bytes\":%llu,\"received_bytes\":%llu,\"compute_ms\":%.3f,\"hardware\":%s},"
+                "\"coordinator_prefill\":{\"layer_begin\":%lld,\"layer_end\":%lld,\"tokens\":%lld,\"chunks\":%lld,"
+                "\"ms_total\":%.3f,\"ms_experts_host\":%.3f,\"experts_streamed\":%lld,\"experts_dma\":%lld,"
+                "\"experts_resident\":%lld,\"experts_cpu\":%lld}}\n",
+                phase, rpc_client.metrics().c_str(), (unsigned long long) w, (unsigned long long) rows,
+                (unsigned long long) accepted, (unsigned long long) ckbytes, (unsigned long long) sent,
+                (unsigned long long) received, double(us) / 1000, telemetry.c_str(),
+                (long long) o.rpc_prefix_layers, (long long) g.n_layers, (long long) local_pf.tokens,
+                (long long) local_pf.chunks, local_pf.ms_total, local_pf.ms_experts_host,
+                (long long) local_pf.experts_streamed, (long long) local_pf.experts_dma,
+                (long long) local_pf.experts_resident, (long long) local_pf.experts_cpu);
+            std::fflush(stdout);
+            return true;
+        };
+        if (rpc_enabled && !rpc_worker) {
+            if (!rpc_client.open(o.rpc_stage, rpc_security, rpc_identity, err)) {
+                std::fprintf(stderr, "strata serve: %s\n", err.c_str()); return 1;
+            }
+            active_rpc = &rpc_client; rpc_session = &ss;
+            if (!report_rpc("startup")) { std::fprintf(stderr, "strata serve: %s\n", err.c_str()); return 1; }
+            ver.before_window = [&](int t, const int32_t* tokens, int64_t pos, std::string& e) {
+                rpc_client.invalidate_after(uint64_t(pos));
+                strata::rpc::Writer w; w.u64(uint64_t(pos)); w.u64(uint64_t(t)); w.bytes(tokens, size_t(t) * 4);
+                std::vector<uint8_t> reply; rpc_window = rpc_client.next_window();
+                if (!rpc_client.call(strata::rpc::Op::verify, std::move(w.data), reply, e, rpc_window)) return false;
+                const size_t expected = size_t(t * strata::core::Verifier::handoff_floats(g)) * 4;
+                if (reply.size() != expected) { e = "RPC verify hand-off length mismatch"; return false; }
+                std::memcpy(rpc_hand_host, reply.data(), expected); rpc_pending.assign(tokens, tokens + t); return true;
+            };
+            ver.after_commit = [&](int keep, std::string& e) {
+                strata::rpc::Writer w; w.u64(uint64_t(keep)); std::vector<uint8_t> reply;
+                if (!rpc_client.call(strata::rpc::Op::commit, std::move(w.data), reply, e, rpc_window) || !reply.empty()) return false;
+                for (int i = 0; i < keep; ++i) { ss.ple_prev[0] = ss.ple_prev[1]; ss.ple_prev[1] = rpc_pending[size_t(i)]; }
+                return true;
+            };
+            sp.input_chunk = [&](const int64_t* tokens, int64_t t, int64_t pos, int64_t remaining, std::vector<float>& rows, std::string& e) {
+                return rpc_prefill.fetch(tokens, t, pos, remaining, sp.embd_rows, rows, e);
+            };
+            sp.drain_input = [&](std::string& e) { return rpc_prefill.drain(e); };
+        }
+#endif
         // --pipeline-windows 2: stage 0's GDN state before a speculative commit, restored when the guess was wrong.
         // Window W reads the state its snapshot must hold and no window writes it (only commits do), so it is copied
         // on a side stream while W runs, into the buffer of W's parity, and only W's speculative commit waits for it
@@ -12048,6 +12230,21 @@ int main(int argc, char** argv) {
         strata::core::ConversationCache conversations(
             o.prompt_cache > 0 ? (size_t) o.conversation_cache_mib * 1024 * 1024 : 0,
             (size_t) o.conversation_cache_slots, o.conversation_cache_min_tokens);
+#if defined(STRATA_HAS_STAGE_RPC)
+        std::set<uint64_t> rpc_park_handles;
+        uint64_t rpc_held_handle = 0;
+        auto sync_rpc_parks = [&]() -> bool {
+            if (!active_rpc) return true;
+            const auto current = conversations.rpc_park_handles();
+            const std::set<uint64_t> wanted(current.begin(), current.end());
+            for (auto it = rpc_park_handles.begin(); it != rpc_park_handles.end();) {
+                if (*it == rpc_held_handle || wanted.contains(*it)) { ++it; continue; }
+                if (!active_rpc->release(*it, err)) return false;
+                it = rpc_park_handles.erase(it);
+            }
+            return true;
+        };
+#endif
         // Disk sessions: what a session file is bound to.  The model fingerprint samples every model input this
         // engine loaded, by role (conversation_file.hpp), once; the config fingerprint covers the RESOLVED settings
         // that change what the saved bytes mean - the rope (K is cached post-RoPE), the loaded control vector, the
@@ -12192,6 +12389,9 @@ int main(int argc, char** argv) {
             if (const size_t dropped = conversations.drop_superseded(src.ids, src.imgs, src.checks, src.cvec))
                 std::fprintf(stderr, "strata serve: conversation cache: dropped %zu superseded cop%s of this "
                              "conversation; parked=%zu\n", dropped, dropped == 1 ? "y" : "ies", conversations.size());
+#if defined(STRATA_HAS_STAGE_RPC)
+            if (!sync_rpc_parks()) return false;
+#endif
             // A layer split parks one image per stage: the first stage's (with the draft layer's K/V) and one per
             // later stage (without it - the draft ring is saved once).  The checkpoints are MOVED apart into their
             // stage parts for the capture and put back together whichever way this ends (no running state copied).
@@ -12271,6 +12471,9 @@ int main(int argc, char** argv) {
                              estimate >> 20);
                 return true;
             }
+#if defined(STRATA_HAS_STAGE_RPC)
+            if (!sync_rpc_parks()) return false;
+#endif
             const auto t0 = Clock::now();
             try {
                 const uint64_t floor = (uint64_t) o.conversation_cache_min_free_mib * 1024 * 1024;
@@ -12296,6 +12499,9 @@ int main(int argc, char** argv) {
                 while (!admit() && conversations.size() > 0 && evicted < conversations.slots() &&
                        conversations.evict_oldest())
                     ++evicted;
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (!sync_rpc_parks()) return false;
+#endif
                 if (!admit()) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (physical RAM admission; need %zu MiB plus %lld MiB floor, %s; evicted %zu, %zu still parked)\n",
                                  additional >> 20, (long long) o.conversation_cache_min_free_mib, ram_note(mem).c_str(),
@@ -12344,15 +12550,39 @@ int main(int argc, char** argv) {
                         return false;
                     image.stage_images.push_back(std::move(part));
                 }
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (active_rpc) {
+                    if (!rpc_prefill.drain(err)) return false;
+                    uint64_t handle = 0, remote_bytes = 0;
+                    if (!active_rpc->park(uint64_t(live.size()), handle, remote_bytes, err)) {
+                        if (!active_rpc->alive()) return false;
+                        std::fprintf(stderr, "strata serve: conversation cache: worker skip parking (%s)\n", err.c_str());
+                        err.clear(); return true;
+                    }
+                    image.rpc_park_handle = handle;
+                    try { rpc_park_handles.insert(handle); }
+                    catch (...) {
+                        std::string release_error;
+                        if (!active_rpc->release(handle, release_error)) err = release_error;
+                        throw;
+                    }
+                }
+#endif
                 const auto mem_after = strata::core::sample_host_memory();
                 if (!strata::core::conversation_memory_admit(
                         mem_after ? std::optional<uint64_t>(mem_after->available) : std::nullopt, 0, floor)) {
                     std::fprintf(stderr, "strata serve: conversation cache: skip parking (RAM floor after capture: %lld MiB needed, %s)\n",
                                  (long long) o.conversation_cache_min_free_mib, ram_note(mem_after).c_str());
+#if defined(STRATA_HAS_STAGE_RPC)
+                    if (!sync_rpc_parks()) return false;
+#endif
                     return true;
                 }
                 const size_t snapshot_bytes = image.bytes();
                 const bool stored = conversations.put(std::move(image), held);
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (!sync_rpc_parks()) return false;
+#endif
                 std::fprintf(stderr, "strata serve: conversation cache: %s %zu tokens%s in %.1f ms; parked=%zu bytes=%zu evictions=%zu snapshot_bytes=%zu reused_kv_bytes=%zu\n",
                              stored ? "parked" : "skipped", src.ids.size(), src.what.c_str(),
                              std::chrono::duration<double, std::milli>(Clock::now() - t0).count(),
@@ -12360,6 +12590,10 @@ int main(int argc, char** argv) {
             } catch (const std::bad_alloc&) {
                 // The active state has not been touched. Continue with normal
                 // prompt processing rather than killing a serving process.
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (!sync_rpc_parks()) return false;
+                if (active_rpc && !active_rpc->alive()) return false;
+#endif
                 std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
             }
             return true;
@@ -12378,6 +12612,9 @@ int main(int argc, char** argv) {
         auto park_current = [&](size_t held) -> bool {
             try { return park_current_body(held); }
             catch (const std::bad_alloc&) {
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (!sync_rpc_parks()) return false;
+#endif
                 std::fprintf(stderr, "strata serve: conversation cache: allocation failed; skip parking\n");
                 return true;
             }
@@ -13770,6 +14007,33 @@ int main(int argc, char** argv) {
             profile_saved_at = Clock::now();
         };
         // stdin is read on its own thread, so a STOP line reaches a request that is still running (the client went
+#if defined(STRATA_HAS_STAGE_RPC)
+        if (rpc_worker) {
+            strata::rpc::WorkerConfig cfg{o.rpc_listen, o.rpc_allow_peer, rpc_identity, rpc_security,
+                                         o.max_context, o.prefill_chunk, 0, 0, 0, {}, {}};
+            cfg.conversation_cache_bytes = uint64_t(o.conversation_cache_mib) << 20;
+            cfg.conversation_cache_floor_bytes = uint64_t(o.conversation_cache_min_free_mib) << 20;
+            cfg.conversation_cache_slots = size_t(o.conversation_cache_slots);
+            cfg.telemetry = [&] {
+                size_t free_b = 0, total_b = 0;
+                cudaMemGetInfo(&free_b, &total_b);
+                return std::string("{\"expert_slots\":") + std::to_string(xcache.slots()) +
+                    ",\"expert_cache_mib\":" + std::to_string(xcache.bytes() >> 20) +
+                    ",\"expert_ram_mib\":" + std::to_string(src.resident_bytes() >> 20) +
+                    ",\"pool_workers\":" + std::to_string(pool.workers()) +
+                    ",\"gpu_free_mib\":" + std::to_string(free_b >> 20) +
+                    ",\"gpu_total_mib\":" + std::to_string(total_b >> 20) +
+                    ",\"cache_hits\":" + std::to_string(drive.d.cache_hits) +
+                    ",\"cache_lookups\":" + std::to_string(drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused) +
+                    ",\"offload_entries\":" + std::to_string(drive.d.offload_entries) +
+                    ",\"ram_blobs\":" + std::to_string(src.ram_reads()) +
+                    ",\"file_blobs\":" + std::to_string(src.file_reads()) +
+                    ",\"file_bytes\":" + std::to_string(src.file_read_bytes()) +
+                    ",\"cpu_pool_ms\":" + std::to_string(drive.cpu_ms) + "}";
+            };
+            return strata::rpc::serve_worker(cfg, ver, sp, ss, g, win_pool_fn, win_pool_user, rpc_hand_host, d_mrope, err);
+        }
+#endif
         // away, or pressed Esc): the flag is checked between prompt chunks and between verify windows.
         // 0.1.44: the reader is detached and may sit in read(2) past QUIT (the server writes more, or closes stdin, while
         // main returns and the process exits), so what it touches is shared with it, never main's locals: a line or
@@ -13942,6 +14206,10 @@ int main(int argc, char** argv) {
             }
         }
         // what the server's Monitor tab shows (servers before 0.1.8 skip unknown lines until READY)
+#if defined(STRATA_HAS_STAGE_RPC)
+        if (rpc_enabled) std::printf("INFO stage_rpc=1 rpc_prefix_layers=%lld rpc_chunk=%lld rpc_source=%s rpc_worker=%s\n",
+            (long long) o.rpc_prefix_layers, (long long) o.prefill_chunk, STRATA_RPC_SOURCE_ID, o.rpc_stage.c_str());
+#endif
         {
             size_t free_b = 0, total_b = 0;
             cudaMemGetInfo(&free_b, &total_b);
@@ -15564,6 +15832,7 @@ int main(int argc, char** argv) {
             // that step is allowed <seconds> (session_phase_limit_s) by the watchdog and by the server, no more.
             // (A verifier commit that fails before the command still answers ERR and exits, as for a request.)
             if (line.rfind("SAVE ", 0) == 0 || line.rfind("RESTORE ", 0) == 0) {
+                if (rpc_enabled) { std::printf("ERR disk session save/restore is not supported with stage RPC v1\n"); continue; }
                 const bool save = line[0] == 'S';
                 const std::string path = line.substr(save ? 5 : 8);
                 const auto t0 = Clock::now();
@@ -15778,6 +16047,9 @@ int main(int argc, char** argv) {
                     if (nan_flush) {   // #879: the file replaced the poisoned session; the parked ones go (no slots here)
                         nan_flush = false;
                         const size_t n_parked = conversations.clear();
+#if defined(STRATA_HAS_STAGE_RPC)
+                        if (!sync_rpc_parks()) { std::printf("ERR releasing worker parks: %s\n", err.c_str()); return 1; }
+#endif
                         std::fprintf(stderr, "strata serve: after non-finite logits (#879): the restored session "
                                              "replaces the live one; dropped %zu parked conversation%s\n", n_parked,
                                      n_parked == 1 ? "" : "s");
@@ -16023,6 +16295,13 @@ int main(int argc, char** argv) {
                 tr("device idle");
                 // CUDA0's table and, with a layer split, every later stage's (each device reads its own)
                 auto upload_mrope = [&]() -> bool {
+#if defined(STRATA_HAS_STAGE_RPC)
+                    if (active_rpc) {
+                        strata::rpc::Writer w; w.u64(mrope_host.size()); w.bytes(mrope_host.data(), mrope_host.size() * 4);
+                        std::vector<uint8_t> reply;
+                        if (!active_rpc->call(strata::rpc::Op::rope, std::move(w.data), reply, ve)) return false;
+                    }
+#endif
                     bool ok = cudaMemcpy(d_mrope, mrope_host.data(), mrope_host.size() * sizeof(int32_t),
                                          cudaMemcpyHostToDevice) == cudaSuccess;
                     for (auto& st : stages) {
@@ -16033,8 +16312,11 @@ int main(int argc, char** argv) {
                     }
                     return ok;
                 };
-                if (ve.empty() && !upload_mrope()) ve = "the image position upload failed";
+                if (ve.empty() && !upload_mrope() && ve.empty()) ve = "the image position upload failed";
                 if (!ve.empty()) {
+#if defined(STRATA_HAS_STAGE_RPC)
+                    if (active_rpc && !active_rpc->alive()) { std::printf("ERR %s\n", ve.c_str()); return 1; }
+#endif
                     // leave the table as the identity so the next text request is untouched
                     for (int64_t c = 0; c < cells; ++c) put(c, c, c, c);
                     upload_mrope();
@@ -16169,6 +16451,9 @@ int main(int argc, char** argv) {
                 checks.clear();
                 tail_ckpt_len = -1;
                 const size_t n_parked = conversations.clear();
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (!sync_rpc_parks()) { std::printf("ERR releasing worker parks: %s\n", err.c_str()); return 1; }
+#endif
                 size_t n_slots = 0, n_running = 0;
                 for (BSlot& sl : bs)
                     if (sl.active) {   // a running slot finishes its reply, but is not kept as a cache after it
@@ -16296,10 +16581,17 @@ int main(int argc, char** argv) {
             // own next turn (ConversationCache::borrows).  Everything else is taken whole, as before.
             // (a layer split restores whole stage images only, so it never borrows; a batch slot that holds a longer
             // start of this prompt wins as before)
-            bool borrow = stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
+            bool rpc_borrow_blocked = false;
+#if defined(STRATA_HAS_STAGE_RPC)
+            rpc_borrow_blocked = active_rpc != nullptr;
+#endif
+            bool borrow = !rpc_borrow_blocked && stages.empty() && parked.tokens > std::max(resume, slot_tokens) &&
                           conversations.borrows(parked);
             if (parked.tokens > std::max(resume, slot_tokens) && !borrow)
                 incoming.emplace(conversations.take(parked.index));
+#if defined(STRATA_HAS_STAGE_RPC)
+            rpc_held_handle = incoming ? incoming->rpc_park_handle : 0;
+#endif
             if (incoming || borrow) slot_source = -1;
             // Reject the entire image before parking/overwriting the outgoing
             // state. Invalid entries can safely fall back to its existing prefix.
@@ -16533,6 +16825,22 @@ int main(int argc, char** argv) {
                 std::printf("ERR the K/V cannot grow to the parked conversation: no VRAM is left\n");
                 return 1;
             }
+#if defined(STRATA_HAS_STAGE_RPC)
+            if (incoming && active_rpc) {
+                bool missing = false;
+                const uint64_t handle = incoming->rpc_park_handle;
+                if (!handle || !active_rpc->activate(handle, missing, err)) {
+                    if (!missing) { std::printf("ERR restoring worker conversation: %s\n", err.c_str()); return 1; }
+                    std::fprintf(stderr, "strata serve: worker parked conversation missing: full prefill\n");
+                    err.clear(); incoming.reset(); resume = 0; from_live = false;
+                    live.clear(); live_imgs.clear(); checks.clear();
+                } else {
+                    rpc_park_handles.erase(handle);
+                }
+                rpc_held_handle = 0;
+                if (!sync_rpc_parks()) { std::printf("ERR releasing stale worker parks: %s\n", err.c_str()); return 1; }
+            }
+#endif
             if (borrow) {
                 const auto t0 = Clock::now();
                 const strata::core::SavedConversation* donor = conversations.find(parked.serial);   // still parked
@@ -16651,6 +16959,9 @@ int main(int argc, char** argv) {
             }
             int64_t reread_to = -1;   // STRATA_CKPT_REREAD only: read [0, reread_to) again instead of restoring
             if (resume == 0) {
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (active_rpc && !active_rpc->empty(strata::rpc::Op::reset, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+#endif
                 strata::core::session_zero(ss, g, nullptr, main_cs);
                 cudaStreamSynchronize(main_stream);
                 for (auto& st : stages) {
@@ -16670,6 +16981,9 @@ int main(int argc, char** argv) {
                 if (c != nullptr) c->used = ++check_clock;   // mounting through it is the use LRU counts
                 static const bool reread = std::getenv("STRATA_CKPT_REREAD") != nullptr;
                 if (reread && c != nullptr) {
+#if defined(STRATA_HAS_STAGE_RPC)
+                    if (active_rpc && !active_rpc->empty(strata::rpc::Op::reset, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+#endif
                     // THE CHECK OF THE CHECKPOINT: instead of restoring it, read its tokens again from position 0 in
                     // one run (below, with the prompt path's slots lent like any read) - the same chunks the request
                     // that saved it read them in, when that request started at 0.  With the VRAM expert set fixed
@@ -16693,8 +17007,14 @@ int main(int argc, char** argv) {
                                }
                                return false;
                            }()) {
-                    std::printf("ERR restoring a conversation checkpoint failed\n");
-                    return 1;
+#if defined(STRATA_HAS_STAGE_RPC)
+                    if (active_rpc && rpc_missing_checkpoint && active_rpc->empty(strata::rpc::Op::reset, err)) {
+                        strata::core::session_zero(ss, g, nullptr, main_cs); cudaStreamSynchronize(main_stream);
+                        checks.clear(); resume = 0; from_live = false;
+                        std::fprintf(stderr, "strata serve: worker checkpoint missing: reset BOTH stages; full prefill\n");
+                    } else
+#endif
+                    { std::printf("ERR restoring a conversation checkpoint failed\n"); return 1; }
                 }
                 if (lent && lent_slot == admit_slot) {
                     // the slot this request continues in drops its checkpoints at the admission: this one moves back
@@ -18222,6 +18542,11 @@ int main(int argc, char** argv) {
             const uint64_t file_bytes0 = src.file_read_bytes();
             const int64_t decode_look0 = drive.d.cache_hits + drive.d.cache_admitted + drive.d.cache_refused;
             const int64_t offload0 = drive.d.offload_entries;   // #588
+#if defined(STRATA_HAS_STAGE_RPC)
+            if (active_rpc && !report_rpc("decode_baseline")) {
+                std::printf("ERR %s\n", err.c_str()); return 1;
+            }
+#endif
             pcie_auto.mark(drive.d.ms_run, drive.d.multi_misses);   // the prompt's windows are not the decode's
             if (cancelled) finish = nf_hit ? "nonfinite" : "cancel";
             // ======== --pipeline-windows 2: the decode windows with the two cards overlapped ========
@@ -19671,6 +19996,11 @@ int main(int argc, char** argv) {
                 std::snprintf(chain_txt, sizeof(chain_txt), " %lld %lld %lld %lld %lld", (long long) chain_ok,
                               (long long) chain_drafts, (long long) sfx_ok, (long long) sfx_drafts, (long long) dec_windows);
             if (yielded_at >= 0) std::printf("YIELDED %d %lld\n", yielded_slot, (long long) yielded_at);
+#if defined(STRATA_HAS_STAGE_RPC)
+            if (active_rpc) {
+                if (!report_rpc("complete")) { std::printf("ERR %s\n", err.c_str()); return 1; }
+            }
+#endif
             std::printf("DONE %lld %lld %.1f %.1f %s %lld %lld %lld %lld %lld %lld %lld %.1f %lld %lld%s chunk=%lld "
                         "experts_streamed=%lld\n",
                         (long long) produced_n,

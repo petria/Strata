@@ -22,6 +22,8 @@ struct ConversationImageKey {
 };
 
 struct ConversationCheckpoint {
+    // Peer-owned running-state handle. Disk session save/load is disabled for RPC v1.
+    uint64_t rpc_handle = 0;
     std::vector<int32_t> ids;
     std::vector<ConversationImageKey> imgs;
     std::vector<uint8_t> gdn, ple, tails, dead, block_pos;
@@ -172,6 +174,8 @@ inline bool conversation_checkpoints_merge(ConversationCheckpointSplit&& split, 
 }
 
 struct SavedConversation {
+    // Opaque stage-RPC worker image handle. Runtime-only; RPC sessions cannot be serialized to disk.
+    uint64_t rpc_park_handle = 0;
     // Runtime compatibility only; NOT a model/weights identity or disk schema.
     std::array<int64_t, 18> geometry{};
     // The session's layer carve the image was captured from ([0, n_layers) on one GPU); restore requires the same.
@@ -256,6 +260,11 @@ public:
     bool wants(int64_t tokens) const { return min_tokens_ <= 0 || tokens >= min_tokens_; }
     size_t bytes() const { return bytes_ + reuse_.bytes(); }
     size_t size() const { return entries_.size(); }
+    std::vector<uint64_t> rpc_park_handles() const {
+        std::vector<uint64_t> out;
+        for (const auto& entry : entries_) if (entry.rpc_park_handle) out.push_back(entry.rpc_park_handle);
+        return out;
+    }
     size_t evictions() const { return evictions_; }
     // the longest parked conversation, in tokens (--kv-grow keeps the K/V that long while it could be restored)
     int64_t longest_tokens() const {

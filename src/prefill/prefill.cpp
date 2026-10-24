@@ -1274,6 +1274,7 @@ struct Prefill::Impl {
     cudaEvent_t hand_done[2] = {};
     cudaEvent_t hand_ev[2][kHandPiecesMax] = {};
     std::unique_ptr<HandWorker> hand_worker;   // STRATA_HANDOFF_PIPE: the next stage's chunks' thread (lazily)
+    float* rpc_input = nullptr;
     // C-4: the chunk's token ids on the device, for one batched embedding gather
     int32_t* tok_dev = nullptr;
     std::vector<int32_t> tok_host;
@@ -1428,6 +1429,7 @@ void Prefill::release() {
     for (int b = 0; b < 2; ++b)
         for (cudaEvent_t e : {impl_->lm.ev_in[b], impl_->lm.ev_done[b], impl_->lm.ev_out[b]})
             if (e) cudaEventDestroy(e);
+    if (impl_->rpc_input) { cudaFreeHost(impl_->rpc_input); impl_->rpc_input = nullptr; }
     impl_->steps_up.release();
     impl_->tok_up.release();
     impl_->up_ring.release();
@@ -1842,11 +1844,16 @@ bool Prefill::init(const core::WeightTable& wt, const core::ModelGeometry& g, co
     }
     cudaGetDevice(&m.device);
     if (stage_le_ < 0) stage_le_ = g.n_layers;
-    if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers || (stage_le_ < g.n_layers) != (next_ != nullptr)) {
+    if (stage_lb_ < 0 || stage_lb_ >= stage_le_ || stage_le_ > g.n_layers ||
+        (stage_le_ < g.n_layers) != (next_ != nullptr || external_stage_output)) {
         err = "prefill: the stage's layer range is wrong";
         return false;
     }
     // the CPU share's staged-chunk limit, before the ring is sized below (a caller that sizes loans first armed it)
+    if (external_stage_input && !m.rpc_input &&
+        cudaHostAlloc((void**) &m.rpc_input, size_t(chunk * D) * 4, cudaHostAllocPortable) != cudaSuccess) {
+        err = "prefill: pinned RPC input buffer allocation failed"; return false;
+    }
     arm_cpu_share(cpu_pool_ != nullptr);
     for (int b = 0; next_ != nullptr && b < 2; ++b)
         if (!m.hand[b] && cudaHostAlloc((void**) &m.hand[b], (size_t) chunk * D * 4, cudaHostAllocPortable) != cudaSuccess) {
@@ -3389,11 +3396,12 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
     const int64_t planned_C = forced > 0 ? 0 : plan_chunk(n);
     const int64_t C = forced > 0 ? forced : planned_C > 0 ? planned_C : m.T;
     if (planned_C > 0 && C < std::min(n, m.T)) log_plan(n, C, stage_count());
-    const bool single_chunk = hand_in_ == nullptr ? (forced > 0 ? forced_single : n <= C) : single_chunk_;
+    const bool has_input = hand_in_ != nullptr || bool(input_chunk);
+    const bool single_chunk = !has_input ? (forced > 0 ? forced_single : n <= C) : single_chunk_;
     // a read the pipe chunked takes no CPU share: its chunks overlap on the stages by design, and which stage won the
     // pool would decide which experts the CPU computed (other bits) - timing, where the chunks are a function of n
-    const bool pipe_chunked = hand_in_ == nullptr ? (forced > 0 ? forced_planned : planned_C > 0 && C < std::min(n, m.T))
-                                                  : pipe_chunked_;
+    const bool pipe_chunked = !has_input ? (forced > 0 ? forced_planned : planned_C > 0 && C < std::min(n, m.T))
+                                         : pipe_chunked_;
     const bool helped = single_chunk && bind_stage_helper(n);
     if (helped) std::swap(m.pp, m.help_pp);
     struct HelpScope {
@@ -3539,10 +3547,20 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 err = "prefill: the layer split's hand-off upload failed";
                 return false;
             }
+        } else if (input_chunk) {
+            if (!input_chunk(tokens + c0, T, p0, n - c0, input_rows_, err)) return false;
+            if (input_rows_.size() != size_t(T * D)) { err = "prefill: malformed RPC stage hand-off"; return false; }
+            if (m.rpc_input) std::memcpy(m.rpc_input, input_rows_.data(), size_t(T * D) * 4);
+            const float* input = m.rpc_input ? m.rpc_input : input_rows_.data();
+            if (cudaMemcpyAsync(m.R, input, (size_t) T * D * 4, cudaMemcpyHostToDevice, m.cs) !=
+                cudaSuccess) {
+                err = "prefill: RPC stage hand-off upload failed";
+                return false;
+            }
         }
         // C-4: the whole chunk's rows in one gather (the same per-element arithmetic as the per-token path, so the
         // same bits); a chunk with picture rows, or a token outside the table, takes the per-token path
-        bool batched = hand_in_ == nullptr && m.tok_dev != nullptr;
+        bool batched = !has_input && m.tok_dev != nullptr;
         const core::NativeEmbed* nemb = core::native_embed();
         const core::WeightRef* wemb = nemb ? nullptr : m.wt->find("token_embd.weight");
         if (batched && nemb == nullptr &&
@@ -3572,7 +3590,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                                                       (uint64_t) (wemb->ne0 / wemb->group_elems), m.emb, m.cs);
             }
         }
-        for (int64_t t = 0; hand_in_ == nullptr && !batched && t < T;) {
+        for (int64_t t = 0; !has_input && !batched && t < T;) {
             const float* row = embd_rows ? embd_rows[p0 + t] : nullptr;
             if (row) {
                 // #1996: the picture's rows live in the caller's (pageable) memory.  A run of consecutive rows is
@@ -3600,7 +3618,7 @@ bool Prefill::run_impl(const int64_t* tokens, int64_t n, int64_t pos0, std::stri
                 ++t;
             }
         }
-        if (hand_in_ == nullptr) gr_broadcast(m.emb, m.R, T, m.cs);
+        if (!has_input) gr_broadcast(m.emb, m.R, T, m.cs);
         // ---- the PLE rows of the whole chunk, one batched SSD request on a thread (see ple_gather).  A later chunk's
         // were read ahead during the previous chunk; the first chunk's are read beside layer 0 - they are needed from
         // layer 1 on, and gathering them here first left the GPU idle for the whole read (~0.4 s of a 32K prompt)
@@ -8002,6 +8020,7 @@ bool Prefill::run(const int64_t* tokens, int64_t n, int64_t pos0, std::string& e
 
     std::string drain_err;
     const bool drain_ok = drain_pipeline(drain_err);
+    if (drain_input && !drain_input(drain_err)) { err = drain_err; return false; }
 
     if (!body_ok) return false;
     if (!drain_ok) {
