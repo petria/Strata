@@ -1232,6 +1232,9 @@ class StrataEngine:
                 continue
             if line is None:
                 break
+            if line.startswith("RPCMETRICS "):
+                self._parse_rpc_metrics(line)
+                continue
             if line.startswith("INFO "):
                 for kv in line.split()[1:]:
                     k, _, v = kv.partition("=")
@@ -1395,6 +1398,10 @@ class StrataEngine:
         multi = self.multi
         line = None
         for line in proc.stdout:
+            if line.startswith("RPCMETRICS "):
+                if self.proc is proc:
+                    self._parse_rpc_metrics(line)
+                continue
             # checked before batch routing: a fatal line is never a slot's own
             if line.startswith(FATAL_PREFIXES):
                 # release_gpu_waits invalidates the verifier, even if the native
@@ -1561,6 +1568,17 @@ class StrataEngine:
                 with self.slot_cv:               # #1012: wake the requests that waited through it: they go on with the
                     self.slot_cv.notify_all()    # new engine, or (it did not start) end with a clean EngineDied
         self.info = {**info, **self.info}
+
+    def _parse_rpc_metrics(self, line):
+        """An engine snapshot; never put control telemetry in the token stream."""
+        try:
+            rpc = json.loads(line.split(" ", 1)[1])
+            if not isinstance(rpc, dict) or not isinstance(rpc.get("client"), dict) or not isinstance(rpc.get("worker"), dict):
+                return
+            rpc["reported_at"] = time.time()
+            self.info["rpc_stage"] = rpc
+        except (ValueError, TypeError, IndexError):
+            pass
 
     def _parse_done(self, line):
         f = line.split()

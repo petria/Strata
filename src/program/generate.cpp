@@ -608,6 +608,10 @@ struct Options {
     std::string rpc_stage, rpc_listen, rpc_allow_peer, rpc_ca, rpc_cert, rpc_key, rpc_model_id;
     int64_t rpc_prefix_layers = 0;
     int rpc_timeout = 300;
+    std::string rpc_transport = "tcp", rpc_rdma_interface;
+    int rpc_rdma_port = 50058;
+    unsigned rpc_rdma_depth = 2, rpc_rdma_credit_batch = 1, rpc_rdma_spin_us = 50;
+    std::string rpc_rdma_poll_mode = "adaptive";
     std::string pack = "pack/full";
     std::vector<int64_t> tokens;      // the prompt, PRE-TOKENIZED
     int64_t max_new = 16;
@@ -1047,6 +1051,11 @@ void usage() {
                  "  --rpc-listen IP:PORT --rpc-allow-peer IP  Worker role, private IPv4 bind only.\n"
                  "  --rpc-ca FILE --rpc-cert FILE --rpc-key FILE  Required mutual TLS credentials.\n"
                  "  --rpc-model-id SHA256 --rpc-timeout SECONDS  Artifact identity and bounded operation timeout.\n"
+                 "  --rpc-transport tcp|rdma  TCP is the default; RDMA requires STRATA_ENABLE_RPC_RDMA.\n"
+                 "  --rpc-rdma-port PORT --rpc-rdma-interface IFACE  RDMA CM port (50058), optional NIC constraint.\n"
+                 "  --rpc-rdma-depth N --rpc-rdma-credit-batch N  RDMA data ring depth (2/4/8/16), credit batch (1..N).\n"
+                 "  --rpc-rdma-poll-mode event|adaptive|spin --rpc-rdma-spin-us N  Experimental CQ polling (defaults adaptive/50).\n"
+                 "                       RDMA payloads are plaintext; mTLS authenticates session setup.\n"
 #endif
                  "  --ple-io direct|mmap|ram  n-gram table reads (plan v0.3 P2). direct (default): unbuffered SSD\n"
                  "                       reads, the table never enters RAM or the file cache; mmap: A/B arm;\n"
@@ -3446,6 +3455,19 @@ int main(int argc, char** argv) {
         else if (a == "--rpc-model-id") o.rpc_model_id = next("--rpc-model-id");
         else if (a == "--rpc-prefix-layers") o.rpc_prefix_layers = std::atoll(next("--rpc-prefix-layers"));
         else if (a == "--rpc-timeout") o.rpc_timeout = std::atoi(next("--rpc-timeout"));
+        else if (a == "--rpc-transport") o.rpc_transport = next("--rpc-transport");
+        else if (a == "--rpc-rdma-port") {
+            const std::string value = next("--rpc-rdma-port");
+            if (value.empty() || value.find_first_not_of("0123456789") != std::string::npos || value.size() > 5) {
+                std::fprintf(stderr, "strata: invalid RDMA port\n"); return 2;
+            }
+            o.rpc_rdma_port = std::stoi(value);
+        }
+        else if (a == "--rpc-rdma-interface") o.rpc_rdma_interface = next("--rpc-rdma-interface");
+        else if (a == "--rpc-rdma-depth") o.rpc_rdma_depth = unsigned(std::strtoul(next("--rpc-rdma-depth"), nullptr, 10));
+        else if (a == "--rpc-rdma-credit-batch") o.rpc_rdma_credit_batch = unsigned(std::strtoul(next("--rpc-rdma-credit-batch"), nullptr, 10));
+        else if (a == "--rpc-rdma-poll-mode") o.rpc_rdma_poll_mode = next("--rpc-rdma-poll-mode");
+        else if (a == "--rpc-rdma-spin-us") o.rpc_rdma_spin_us = unsigned(std::strtoul(next("--rpc-rdma-spin-us"), nullptr, 10));
         else if (a == "--tokens") {
             if (have_tokens) { std::fprintf(stderr, "supply one token input only\n"); return 2; }
             std::string e;
@@ -4033,6 +4055,27 @@ int main(int argc, char** argv) {
 #endif
     const bool rpc_worker = !o.rpc_listen.empty();
     const bool rpc_enabled = rpc_worker || !o.rpc_stage.empty();
+    if (o.rpc_transport != "tcp" && o.rpc_transport != "rdma") {
+        std::fprintf(stderr, "strata: --rpc-transport must be tcp or rdma\n"); return 2;
+    }
+    if (o.rpc_rdma_port < 1 || o.rpc_rdma_port > 65535 ||
+        (o.rpc_transport == "tcp" && (o.rpc_rdma_port != 50058 || !o.rpc_rdma_interface.empty()))) {
+        std::fprintf(stderr, "strata: RDMA port/interface options require --rpc-transport rdma and a valid port\n"); return 2;
+    }
+    const bool rdma_tuning_default = o.rpc_rdma_depth==2 && o.rpc_rdma_credit_batch==1 &&
+        o.rpc_rdma_poll_mode=="adaptive" && o.rpc_rdma_spin_us==50;
+    if ((o.rpc_transport=="tcp" && !rdma_tuning_default) ||
+        (o.rpc_rdma_depth!=2 && o.rpc_rdma_depth!=4 && o.rpc_rdma_depth!=8 && o.rpc_rdma_depth!=16) ||
+        !o.rpc_rdma_credit_batch || o.rpc_rdma_credit_batch>o.rpc_rdma_depth ||
+        (o.rpc_rdma_poll_mode!="event" && o.rpc_rdma_poll_mode!="adaptive" && o.rpc_rdma_poll_mode!="spin") ||
+        o.rpc_rdma_spin_us>1000) {
+        std::fprintf(stderr,"strata: invalid RDMA tuning (depth 2/4/8/16, credit batch 1..depth, poll event|adaptive|spin, spin 0..1000us; options require RDMA)\n"); return 2;
+    }
+#if !defined(STRATA_HAS_RPC_RDMA)
+    if (o.rpc_transport == "rdma") {
+        std::fprintf(stderr, "strata: rebuild with STRATA_ENABLE_STAGE_RPC=ON and STRATA_ENABLE_RPC_RDMA=ON\n"); return 2;
+    }
+#endif
     const int64_t rpc_lb = rpc_enabled && !rpc_worker ? o.rpc_prefix_layers : 0;
     const int64_t rpc_le = rpc_enabled && rpc_worker ? o.rpc_prefix_layers : 48;
     if (rpc_enabled) {
@@ -4065,7 +4108,7 @@ int main(int argc, char** argv) {
         o.pipeline_windows = 0;
         std::fprintf(stderr, "strata generate: experimental stage RPC %s, owns layers [%lld,%lld)\n",
             rpc_worker ? "worker" : "coordinator", (long long) rpc_lb, (long long) rpc_le);
-    } else if (o.rpc_prefix_layers || !o.rpc_model_id.empty() || !o.rpc_ca.empty() || !o.rpc_cert.empty() || !o.rpc_key.empty()) {
+    } else if (o.rpc_transport != "tcp" || !o.rpc_rdma_interface.empty() || o.rpc_prefix_layers || !o.rpc_model_id.empty() || !o.rpc_ca.empty() || !o.rpc_cert.empty() || !o.rpc_key.empty()) {
         std::fprintf(stderr, "strata generate: RPC options require --rpc-stage or --rpc-listen\n"); return 2;
     }
     strata::core::set_coupled_draft(o.coupled_draft);
@@ -11998,9 +12041,11 @@ int main(int argc, char** argv) {
             "|" + std::to_string(o.rope_scale) + "|" + std::to_string(o.rope_freq_base) +
             "|" + std::to_string(o.rope_freq_scale) + "|" + std::to_string(o.yarn_orig_ctx) +
             "|" + std::to_string(o.yarn_ext_factor) + "|" + std::to_string(o.yarn_attn_factor) +
-            "|" + std::to_string(o.yarn_beta_fast) + "|" + std::to_string(o.yarn_beta_slow) : "";
+            "|" + std::to_string(o.yarn_beta_fast) + "|" + std::to_string(o.yarn_beta_slow) + "|transport=" + o.rpc_transport : "";
         strata::rpc::Security rpc_security{o.rpc_ca, o.rpc_cert, o.rpc_key,
-            rpc_worker ? "strata-stage-coordinator" : "strata-stage-worker", o.rpc_timeout};
+            rpc_worker ? "strata-stage-coordinator" : "strata-stage-worker", o.rpc_timeout,
+            o.rpc_transport, o.rpc_rdma_port, o.rpc_rdma_interface, o.rpc_rdma_depth,
+            o.rpc_rdma_credit_batch, o.rpc_rdma_poll_mode, o.rpc_rdma_spin_us};
         strata::rpc::Client rpc_client;
         strata::rpc::PrefillPipeline rpc_prefill(rpc_client, g.hc * g.n_embd, g.n_embd);
         uint64_t rpc_window = 0;

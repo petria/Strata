@@ -22,6 +22,13 @@ struct Security {
     std::string ca, cert, key;
     std::string peer_name = "strata-stage-worker";
     int timeout_seconds = 300;
+    std::string transport = "tcp";
+    int rdma_port = 50058;
+    std::string rdma_interface = {};
+    unsigned rdma_depth = 2;
+    unsigned rdma_credit_batch = 1;
+    std::string rdma_poll_mode = "adaptive";
+    unsigned rdma_spin_us = 50;
 };
 struct Counters { uint64_t sent = 0, received = 0, messages_sent = 0, messages_received = 0; };
 class Connection {
@@ -38,12 +45,14 @@ public:
     void close();
     const Counters& counters() const { return counters_; }
     std::string profile_json() const { return profile_.json(); }
+    std::string transport_json() const;
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
     Counters counters_;
     Profile profile_{speed_options().profile};
     bool transfer(void*, size_t, bool write, std::string& error);
+    bool setup_rdma(const Security&, std::string& error);
 };
 // Explicit little-endian scalar encoding; float arrays are IEEE754 little-endian by contract.
 class Writer {

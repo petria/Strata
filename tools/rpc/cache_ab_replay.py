@@ -71,7 +71,8 @@ def rpc_stage_delta(before: dict, after: dict) -> dict:
         "coordinator_transport": {name: {"calls": diff(old_transport.get(name, {}), new_transport.get(name, {}), "calls"),
                                          "ms": diff(old_transport.get(name, {}), new_transport.get(name, {}), "ms"),
                                          "bytes": diff(old_transport.get(name, {}), new_transport.get(name, {}), "bytes")}
-                                  for name in ("socket_read", "socket_write")},
+                                  for name in ("socket_read", "socket_write", "rdma_read", "rdma_write")},
+        "transport": (new.get("client") or {}).get("transport", {}),
         "timing_kind": ((new.get("worker") or {}).get("hardware", {}).get("profile") or {}).get("timing_kind"),
     }
 

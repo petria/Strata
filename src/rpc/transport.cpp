@@ -1,4 +1,7 @@
 #include "strata/rpc/transport.hpp"
+#if defined(STRATA_HAS_RPC_RDMA)
+#include "strata/rpc/rdma_transport.hpp"
+#endif
 #include <openssl/ssl.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
@@ -9,6 +12,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <poll.h>
+#include <fcntl.h>
+#include <chrono>
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -19,10 +24,20 @@
 #include <stdexcept>
 
 namespace strata::rpc {
-struct Connection::Impl { SSL_CTX* ctx = nullptr; SSL* ssl = nullptr; int fd = -1; bool server = false; };
+struct Connection::Impl {
+    SSL_CTX* ctx = nullptr; SSL* ssl = nullptr; int fd = -1; bool server = false;
+    std::string transport = "tcp";
+    uint64_t bootstrap_sent = 0, bootstrap_received = 0;
+#if defined(STRATA_HAS_RPC_RDMA)
+    std::unique_ptr<RdmaTransport> rdma;
+#endif
+};
 Connection::Connection() : impl_(std::make_unique<Impl>()) { std::signal(SIGPIPE, SIG_IGN); }
 Connection::~Connection() { close(); }
 void Connection::close() {
+#if defined(STRATA_HAS_RPC_RDMA)
+    impl_->rdma.reset();
+#endif
     if (impl_->ssl) { SSL_free(impl_->ssl); impl_->ssl = nullptr; }
     if (impl_->fd >= 0) { ::shutdown(impl_->fd, SHUT_RDWR); ::close(impl_->fd); impl_->fd = -1; }
     if (impl_->ctx) { SSL_CTX_free(impl_->ctx); impl_->ctx = nullptr; }
@@ -34,7 +49,39 @@ static bool fail(std::string& e, const char* what) {
     e = std::string("stage RPC: ") + what + (n ? ": " + std::string(buf) : ": " + std::string(strerror(errno)));
     return false;
 }
+static const char* alpn_name(const Security& s) {
+    return s.transport == "rdma" ? "strata-rdma-v1" : "strata-tcp-v1";
+}
+static int alpn_select(SSL*, const unsigned char** out, unsigned char* outlen,
+                       const unsigned char* in, unsigned int len, void* arg) {
+    const auto* expected = static_cast<const char*>(arg);
+    for (unsigned i = 0; i < len;) {
+        const auto n = in[i++];
+        if (i + n > len) return SSL_TLSEXT_ERR_ALERT_FATAL;
+        if (n == std::strlen(expected) && std::memcmp(in + i, expected, n) == 0) {
+            *out = in + i; *outlen = n; return SSL_TLSEXT_ERR_OK;
+        }
+        i += n;
+    }
+    return SSL_TLSEXT_ERR_ALERT_FATAL;
+}
+static bool alpn_check(SSL* ssl, const Security& s, std::string& e) {
+    const unsigned char* selected = nullptr; unsigned n = 0;
+    SSL_get0_alpn_selected(ssl, &selected, &n);
+    // Legacy TCP peers did not send ALPN. RDMA must negotiate explicitly.
+    if ((!n && s.transport == "tcp") || (n == std::strlen(alpn_name(s)) &&
+        std::memcmp(selected, alpn_name(s), n) == 0)) return true;
+    e = "stage RPC: transport negotiation mismatch"; return false;
+}
 static SSL_CTX* context(const Security& s, bool server, std::string& e) {
+    if (s.transport != "tcp" && s.transport != "rdma") {
+        e = "stage RPC: unknown transport"; return nullptr;
+    }
+#if !defined(STRATA_HAS_RPC_RDMA)
+    if (s.transport == "rdma") {
+        e = "stage RPC: native RDMA was not enabled at build time"; return nullptr;
+    }
+#endif
     if (s.ca.empty() || s.cert.empty() || s.key.empty() || s.timeout_seconds < 1 || s.timeout_seconds > 3600) {
         e = "stage RPC: CA, role certificate, private key and bounded timeout are required"; return nullptr;
     }
@@ -47,6 +94,7 @@ static SSL_CTX* context(const Security& s, bool server, std::string& e) {
         SSL_CTX_check_private_key(c) != 1) { fail(e, "TLS credentials"); SSL_CTX_free(c); return nullptr; }
     SSL_CTX_set_verify(c, SSL_VERIFY_PEER | (server ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0), nullptr);
     SSL_CTX_set_options(c, SSL_OP_NO_COMPRESSION);
+    if (server) SSL_CTX_set_alpn_select_cb(c, alpn_select, const_cast<char*>(alpn_name(s)));
     return c;
 }
 static bool resolve(const std::string& endpoint, sockaddr_in& a, std::string& e) {
@@ -73,7 +121,7 @@ static void options(int fd, int timeout) {
 }
 bool Connection::connect(const std::string& endpoint, const Security& s, std::string& e) {
     close();
-    impl_->server = false;
+    impl_->server = false; impl_->transport = s.transport;
     sockaddr_in a;
     if (!resolve(endpoint, a, e) || !(impl_->ctx = context(s, false, e))) return false;
     impl_->fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -81,14 +129,21 @@ bool Connection::connect(const std::string& endpoint, const Security& s, std::st
     options(impl_->fd, s.timeout_seconds);
     if (::connect(impl_->fd, (sockaddr*) &a, sizeof a) != 0) return fail(e, "connect");
     impl_->ssl = SSL_new(impl_->ctx);
+    if (impl_->ssl) {
+        const std::string protocol = alpn_name(s);
+        std::vector<unsigned char> alpn{static_cast<unsigned char>(protocol.size())};
+        alpn.insert(alpn.end(), protocol.begin(), protocol.end());
+        if (SSL_set_alpn_protos(impl_->ssl, alpn.data(), unsigned(alpn.size())) != 0) return fail(e, "ALPN setup");
+    }
     if (!impl_->ssl || !SSL_set_fd(impl_->ssl, impl_->fd) ||
         !SSL_set_tlsext_host_name(impl_->ssl, s.peer_name.c_str()) || !SSL_set1_host(impl_->ssl, s.peer_name.c_str()) ||
         SSL_connect(impl_->ssl) != 1 || SSL_get_verify_result(impl_->ssl) != X509_V_OK) return fail(e, "mutual TLS connect");
-    return true;
+    if (!alpn_check(impl_->ssl, s, e)) { close(); return false; }
+    return s.transport == "rdma" ? setup_rdma(s, e) : true;
 }
 bool Connection::accept(const std::string& endpoint, const std::string& allow_peer, const Security& s, std::string& e) {
     close();
-    impl_->server = true;
+    impl_->server = true; impl_->transport = s.transport;
     sockaddr_in a, allowed{};
     if (!resolve(endpoint, a, e) || a.sin_addr.s_addr == INADDR_ANY ||
         inet_pton(AF_INET, allow_peer.c_str(), &allowed.sin_addr) != 1) {
@@ -115,9 +170,99 @@ bool Connection::accept(const std::string& endpoint, const std::string& allow_pe
     const bool role = cert && X509_check_host(cert, s.peer_name.c_str(), s.peer_name.size(), 0, nullptr) == 1;
     if (cert) X509_free(cert);
     if (!role) { e = "stage RPC: incorrect coordinator certificate identity"; close(); return false; }
+    if (!alpn_check(impl_->ssl, s, e)) { close(); return false; }
+    return s.transport == "rdma" ? setup_rdma(s, e) : true;
+}
+std::string Connection::transport_json() const {
+#if defined(STRATA_HAS_RPC_RDMA)
+    if (impl_->rdma) return impl_->rdma->metrics_json();
+#endif
+    return std::string("{\"backend\":\"") + impl_->transport + "\",\"payload_encrypted\":" +
+        (impl_->transport == "tcp" ? "true" : "false") +
+        ",\"bootstrap_sent_bytes\":" + std::to_string(impl_->bootstrap_sent) +
+        ",\"bootstrap_received_bytes\":" + std::to_string(impl_->bootstrap_received) + "}";
+}
+bool Connection::setup_rdma(const Security& s, std::string& e) {
+#if !defined(STRATA_HAS_RPC_RDMA)
+    (void)s; e = "stage RPC: RDMA not built"; return false;
+#else
+    if (s.rdma_port < 1 || s.rdma_port > 65535) { e = "stage RPC: invalid RDMA port"; close(); return false; }
+    using Clock = std::chrono::steady_clock;
+    const auto deadline = Clock::now() + std::chrono::seconds(s.timeout_seconds);
+    const int flags = fcntl(impl_->fd, F_GETFL);
+    if (flags < 0 || fcntl(impl_->fd, F_SETFL, flags | O_NONBLOCK) < 0) {
+        fail(e, "nonblocking RDMA bootstrap"); close(); return false;
+    }
+    auto bytes = [&](void* ptr, size_t size, bool write, std::string& err) {
+        auto* p = static_cast<unsigned char*>(ptr);
+        while (size) {
+            const auto now = Clock::now();
+            if (now >= deadline) { err = "stage RPC: RDMA bootstrap deadline exceeded"; return false; }
+            const int n = int(std::min(size, size_t(4096)));
+            ERR_clear_error();
+            const int got = write ? SSL_write(impl_->ssl, p, n) : SSL_read(impl_->ssl, p, n);
+            if (got > 0) {
+                (write ? impl_->bootstrap_sent : impl_->bootstrap_received) += uint64_t(got);
+                size -= size_t(got); p += got; continue;
+            }
+            const int why = SSL_get_error(impl_->ssl, got);
+            if (why != SSL_ERROR_WANT_READ && why != SSL_ERROR_WANT_WRITE)
+                return fail(err, "RDMA authenticated bootstrap");
+            const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+            if (left <= 0) { err = "stage RPC: RDMA bootstrap deadline exceeded"; return false; }
+            pollfd fd{impl_->fd, short(why == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN), 0};
+            const int rc = poll(&fd, 1, int(std::min<int64_t>(left, 1000)));
+            if (rc < 0 && errno != EINTR) return fail(err, "RDMA bootstrap poll");
+            if (rc > 0 && (fd.revents & (POLLERR | POLLNVAL))) return fail(err, "RDMA bootstrap disconnected");
+        }
+        return true;
+    };
+    // Versioned setup is carried only inside the already authenticated TLS channel.
+    Writer proposal; proposal.u64(0x31414d4452415453ull); proposal.u64(uint64_t(s.rdma_port));
+    std::array<unsigned char, 16> incoming{};
+    std::array<uint8_t, 32> cookie{};
+    if (impl_->server) {
+        if (!bytes(incoming.data(), incoming.size(), false, e) ||
+            !std::equal(incoming.begin(), incoming.end(), proposal.data.begin())) {
+            if (e.empty()) e = "stage RPC: RDMA bootstrap protocol/port mismatch";
+            close(); return false;
+        }
+        if (RAND_bytes(cookie.data(), int(cookie.size())) != 1) { fail(e, "RDMA session entropy"); close(); return false; }
+    } else {
+        if (!bytes(proposal.data.data(), proposal.data.size(), true, e) ||
+            !bytes(cookie.data(), cookie.size(), false, e)) { close(); return false; }
+    }
+    sockaddr_in local{}, peer{}; socklen_t n = sizeof(local);
+    if (getsockname(impl_->fd, reinterpret_cast<sockaddr*>(&local), &n) != 0 ||
+        getpeername(impl_->fd, reinterpret_cast<sockaddr*>(&peer), &n) != 0) {
+        fail(e, "RDMA bootstrap addresses"); close(); return false;
+    }
+    char lip[INET_ADDRSTRLEN]{}, pip[INET_ADDRSTRLEN]{};
+    inet_ntop(AF_INET, &local.sin_addr, lip, sizeof(lip)); inet_ntop(AF_INET, &peer.sin_addr, pip, sizeof(pip));
+    auto ready = [&](std::string& err) { return bytes(cookie.data(), cookie.size(), true, err); };
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - Clock::now()).count();
+    if (left <= 0) { e = "stage RPC: RDMA bootstrap deadline exceeded"; close(); return false; }
+    const int remaining_seconds = int((left + 999) / 1000);
+    auto rdma = std::make_unique<RdmaTransport>();
+    RdmaOptions rdma_options{s.rdma_depth, s.rdma_credit_batch, s.rdma_poll_mode, s.rdma_spin_us};
+    const bool ok = rdma->open(impl_->server, lip, pip, s.rdma_port, s.rdma_interface,
+        cookie, s.timeout_seconds, impl_->fd, impl_->server ? ready : std::function<bool(std::string&)>{}, e,
+        remaining_seconds, rdma_options);
+    OPENSSL_cleanse(cookie.data(), cookie.size());
+    if (!ok) { close(); return false; }
+    impl_->rdma = std::move(rdma);
     return true;
+#endif
 }
 bool Connection::transfer(void* ptr, size_t size, bool write, std::string& e) {
+#if defined(STRATA_HAS_RPC_RDMA)
+    if (impl_->rdma) {
+        CostScope timing(profile_, write ? Cost::rdma_write : Cost::rdma_read, size);
+        if (!impl_->rdma->transfer(ptr, size, write, e)) { close(); return false; }
+        (write ? counters_.sent : counters_.received) += uint64_t(size);
+        return true;
+    }
+#endif
     CostScope timing(profile_, write ? Cost::socket_write : Cost::socket_read, size);
     if (!impl_->ssl) { e = "stage RPC: not connected"; return false; }
     auto* p = static_cast<uint8_t*>(ptr);
@@ -141,6 +286,11 @@ bool Connection::send(const Message& m, std::string& e) {
 bool Connection::receive(Message& m, std::string& e) {
     // An idle authenticated worker must not die between user requests. Once bytes arrive, the normal
     // finite TLS read timeout still bounds a stalled/partial header or payload. Client replies always time out.
+#if defined(STRATA_HAS_RPC_RDMA)
+    if (impl_->server && impl_->rdma) {
+        if (!impl_->rdma->idle_wait(e)) { close(); return false; }
+    } else
+#endif
     if (impl_->server && impl_->ssl && SSL_pending(impl_->ssl) == 0) {
         pollfd p{impl_->fd, POLLIN, 0};
         int n;

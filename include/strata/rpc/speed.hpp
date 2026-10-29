@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstdint>
@@ -48,28 +49,42 @@ inline const SpeedOptions& speed_options() {
     return options;
 }
 enum class Cost : size_t { worker, verify, commit, prefill, checkpoint_validate, checkpoint_capture,
-    checkpoint_restore, serialize, deserialize, socket_read, socket_write, gpu_download, adaptation, count };
+    checkpoint_restore, serialize, deserialize, socket_read, socket_write, gpu_download, adaptation, rdma_read, rdma_write, count };
 class Profile {
-    struct Bucket { uint64_t calls=0, ns=0, bytes=0; };
+    struct Bucket {
+        uint64_t calls=0, ns=0, bytes=0, max_ns=0;
+        std::array<uint64_t,4> size_bins{}; // <=4 KiB, <=64 KiB, <=1 MiB, >1 MiB
+        std::array<uint64_t,5> time_bins{}; // <=100 us, <=1 ms, <=10 ms, <=100 ms, >100 ms
+    };
     bool enabled_;
     std::array<Bucket,size_t(Cost::count)> buckets_{};
 public:
     explicit Profile(bool enabled=false) : enabled_(enabled) {}
     bool enabled() const { return enabled_; }
     void add(Cost c, uint64_t ns, uint64_t bytes=0) {
-        if (enabled_) { auto& b=buckets_[size_t(c)]; ++b.calls; b.ns+=ns; b.bytes+=bytes; }
+        if (enabled_) {
+            auto& b=buckets_[size_t(c)]; ++b.calls; b.ns+=ns; b.bytes+=bytes;
+            b.max_ns=std::max(b.max_ns,ns);
+            ++b.size_bins[bytes<=4096?0:bytes<=65536?1:bytes<=1048576?2:3];
+            ++b.time_bins[ns<=100000?0:ns<=1000000?1:ns<=10000000?2:ns<=100000000?3:4];
+        }
     }
     // Owned by the RPC thread / Client's wire mutex. Never queried concurrently by a sampler.
     std::string json() const {
         static constexpr const char* names[] = {"worker","verify","commit","prefill","checkpoint_validate",
             "checkpoint_capture","checkpoint_restore","serialize","deserialize","socket_read","socket_write",
-            "gpu_download","adaptation"};
+            "gpu_download","adaptation","rdma_read","rdma_write"};
         std::ostringstream out;
         out << "{\"enabled\":" << (enabled_?"true":"false") << ",\"timing_kind\":\"host_elapsed_overlapping\",\"costs\":{";
         for(size_t i=0;i<buckets_.size();++i) {
             if(i) out<<',';
             const auto& b=buckets_[i];
-            out << '"' << names[i] << "\":{\"calls\":" << b.calls << ",\"ms\":" << double(b.ns)/1e6 << ",\"bytes\":" << b.bytes << '}';
+            out << '"' << names[i] << "\":{\"calls\":" << b.calls << ",\"ms\":" << double(b.ns)/1e6
+                << ",\"bytes\":" << b.bytes << ",\"max_ms\":" << double(b.max_ns)/1e6 << ",\"size_bins\":[";
+            for(size_t j=0;j<b.size_bins.size();++j) { if(j) out<<','; out<<b.size_bins[j]; }
+            out << "],\"time_bins\":[";
+            for(size_t j=0;j<b.time_bins.size();++j) { if(j) out<<','; out<<b.time_bins[j]; }
+            out << "]}";
         }
         return out.str()+"}}";
     }

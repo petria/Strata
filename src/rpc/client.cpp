@@ -82,7 +82,7 @@ std::string Client::metrics() const {
     const auto& c = wire_.counters(); std::ostringstream o;
     o << "{\"calls\":" << calls_ << ",\"sent_bytes\":" << c.sent << ",\"received_bytes\":" << c.received
       << ",\"roundtrip_ms\":" << elapsed_ms_ << ",\"alive\":" << (alive_ ? "true" : "false")
-      << ",\"profile\":" << wire_.profile_json() << ",\"client_profile\":" << profile_.json() << "}";
+      << ",\"transport\":" << wire_.transport_json() << ",\"profile\":" << wire_.profile_json() << ",\"client_profile\":" << profile_.json() << "}";
     return o.str();
 }
 void Client::remember_checkpoint(uint64_t position, uint64_t handle) {

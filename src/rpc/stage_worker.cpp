@@ -259,6 +259,7 @@ int serve_worker(const WorkerConfig& cfg, core::Verifier& ver, prefill::Prefill&
                     telemetry.pop_back();
                     if (telemetry.size()>1) telemetry += ',';
                     telemetry += "\"profile\":" + profile.json() + ",\"transport_profile\":" + wire.profile_json() +
+                        ",\"transport\":" + wire.transport_json() +
                         ",\"parked_conversations\":" + std::to_string(parked.size()) +
                         ",\"parked_bytes\":" + std::to_string(parked_bytes) +
                         ",\"parks\":" + std::to_string(park_count) +
