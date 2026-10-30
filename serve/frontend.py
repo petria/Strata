@@ -1219,6 +1219,14 @@ class OutputParser:
             if isinstance(name, str) and name:
                 for prefix in ("tools.", "functions.", "default_api."):
                     aliases.setdefault(prefix + name, set()).add(name)
+        # Open WebUI's Files workspace declares `replace_file_content`; Qwen sometimes emits the shorter
+        # `<function=replace_file>` name for the same path/old/new operation. Accept that spelling only when the
+        # request declares exactly one such tool. A declared `replace_file` always wins, and ambiguous namespaces
+        # remain rejected like every other unknown name.
+        for name in self.schemas:
+            if isinstance(name, str) and (name == "replace_file_content" or
+                    name.endswith((".replace_file_content", "__replace_file_content"))):
+                aliases.setdefault("replace_file", set()).add(name)
         self.aliases = {alias: next(iter(names)) for alias, names in aliases.items()
                         if len(names) == 1 and alias not in self.schemas}
         self.unread = 0              # #3441: `<tool_call>` blocks that opened like a call and were returned as text
