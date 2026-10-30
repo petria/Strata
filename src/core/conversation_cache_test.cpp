@@ -744,6 +744,8 @@ int main() {
         // what drop_superseded does with the slot's chain (the park this rule prevents): the root goes
         check(cache.drop_superseded(slot_ids, {}, slot_chain, true) == 1 && cache.size() == 0,
               "the slot's chain supersedes the richer copy");
+    }
+    {
         auto a = image({1, 2, 3}); a.rpc_park_handle = 17;
         auto b = image({4, 5, 6}); b.rpc_park_handle = 23;
         ConversationCache cache(4096, 2);
