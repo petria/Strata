@@ -59,7 +59,31 @@ int serve_worker(const WorkerConfig& cfg, core::Verifier& ver, prefill::Prefill&
             error = "stale epoch, out-of-order sequence or missing handshake";
         } else if (req.op == Op::hello) {
             const auto identity = r.string();
-            if (epoch || !req.epoch || !r.done() || identity != cfg.identity) error = "model, build, geometry, context, KV or chunk mismatch";
+            if (epoch || !req.epoch || !r.done() || identity != cfg.identity) {
+                error = "model, build, geometry, context, KV or chunk mismatch";
+                if (identity != cfg.identity) {
+                    size_t offset = 0, field = 0;
+                    while (offset <= identity.size() && offset <= cfg.identity.size()) {
+                        const size_t a = identity.find('|', offset), b = cfg.identity.find('|', offset);
+                        const size_t ae = a == std::string::npos ? identity.size() : a;
+                        const size_t be = b == std::string::npos ? cfg.identity.size() : b;
+                        const auto lhs = std::string_view(identity).substr(offset, ae - offset);
+                        const auto rhs = std::string_view(cfg.identity).substr(offset, be - offset);
+                        if (lhs != rhs) {
+                            error += " (field " + std::to_string(field) + ": coordinator='" + std::string(lhs.substr(0, 96)) +
+                                     "' worker='" + std::string(rhs.substr(0, 96)) + "')";
+                            break;
+                        }
+                        if (ae == identity.size() && be == cfg.identity.size()) break;
+                        if (ae == identity.size() || be == cfg.identity.size()) {
+                            error += " (identity field count differs after field " + std::to_string(field) + ")";
+                            break;
+                        }
+                        offset = ae + 1;
+                        ++field;
+                    }
+                }
+            }
             else epoch = req.epoch;
         } else if (req.op == Op::reset) {
             if (!r.done()) error = "malformed reset";
