@@ -3,6 +3,7 @@
 #include "strata/rpc/stage_worker.hpp"
 #include "strata/rpc/client.hpp"
 #include "strata/rpc/prefill_client.hpp"
+#include "strata/rpc/worker_gpu_monitor.hpp"
 #endif
 // src/program/generate.cpp - P2.S6: `strata generate`.
 //
@@ -14062,7 +14063,7 @@ int main(int argc, char** argv) {
             cfg.telemetry = [&] {
                 size_t free_b = 0, total_b = 0;
                 cudaMemGetInfo(&free_b, &total_b);
-                return std::string("{\"expert_slots\":") + std::to_string(xcache.slots()) +
+                std::string snapshot = std::string("{\"expert_slots\":") + std::to_string(xcache.slots()) +
                     ",\"expert_cache_mib\":" + std::to_string(xcache.bytes() >> 20) +
                     ",\"expert_ram_mib\":" + std::to_string(src.resident_bytes() >> 20) +
                     ",\"pool_workers\":" + std::to_string(pool.workers()) +
@@ -14074,7 +14075,11 @@ int main(int argc, char** argv) {
                     ",\"ram_blobs\":" + std::to_string(src.ram_reads()) +
                     ",\"file_blobs\":" + std::to_string(src.file_reads()) +
                     ",\"file_bytes\":" + std::to_string(src.file_read_bytes()) +
-                    ",\"cpu_pool_ms\":" + std::to_string(drive.cpu_ms) + "}";
+                    ",\"cpu_pool_ms\":" + std::to_string(drive.cpu_ms);
+                if (strata::rpc::worker_gpu_monitor_enabled())
+                    snapshot += ",\"gpu_monitor\":" + strata::rpc::worker_gpu_monitor_json();
+                snapshot += "}";
+                return snapshot;
             };
             return strata::rpc::serve_worker(cfg, ver, sp, ss, g, win_pool_fn, win_pool_user, rpc_hand_host, d_mrope, err);
         }

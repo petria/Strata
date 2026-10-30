@@ -419,6 +419,9 @@ strata_gpu_engine()
 if(STRATA_ENABLE_STAGE_RPC)
   target_sources(strata PRIVATE src/rpc/stage_worker.cpp)
   target_link_libraries(strata PRIVATE strata_stage_rpc)
+  if(UNIX AND NOT APPLE)
+    target_link_libraries(strata PRIVATE ${CMAKE_DL_LIBS})
+  endif()
   target_compile_definitions(strata PRIVATE STRATA_HAS_STAGE_RPC=1)
   # The two architecture-specific builds must identify the same complete runtime source tree.
   file(GLOB_RECURSE _stage_sources CONFIGURE_DEPENDS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"

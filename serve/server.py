@@ -4766,6 +4766,7 @@ class Service:
         self.conv_log = ConvCacheLog()                  # #596: the parked conversations, from the engine's log
         self.config_path = None                         # #564: the run config the web page's Settings view edits
         self.config_lock = threading.Lock()
+        self.rpc_monitor_remote_gpu = False              # RPC worker shown as a Monitor-only extra GPU
         # #321: browser pages of these origins may call /v1/* (CORS; "*" = any page - only with an api_key that
         # matters); empty = no CORS headers at all, as before
         self.cors_origins: list[str] = []
@@ -5668,10 +5669,14 @@ class Service:
         engine = {"model": self.model, "max_context": self.reported_ctx(), "images": self.vision is not None,
                   **dict(getattr(self.engine, "info", {}) or {})}
         tel = self.telemetry.snapshot() if getattr(self, "telemetry", None) else {"now": {}, "history": {}, "static": {}}
+        hardware = tel["now"]
+        if getattr(self, "rpc_monitor_remote_gpu", False):
+            from serve.rpc_monitor import add_remote_gpu
+            hardware = add_remote_gpu(hardware, engine, True, now, tel["static"])
         parked = self.conv_log.poll(getattr(self.engine, "log_path", None), getattr(self.engine, "log_start", None))
         return {"engine": engine, "live": live, "requests": hist[::-1][:None if all_requests else 12],
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
-                "requests_kept": len(hist), "totals": totals, "hardware": tel["now"],
+                "requests_kept": len(hist), "totals": totals, "hardware": hardware,
                 "hardware_static":
                 tel["static"], "history": tel["history"], "time": now}
 
@@ -10210,6 +10215,11 @@ def _main(argv=None, *, lifecycle_event=None, interrupt_exit_code: int = 0) -> i
                   model_name=default_model_name(cfg), vision=vision,
                   sampling_defaults=sampling_defaults,
                   fit_max_tokens=a.fit_max_tokens or (not a.no_fit_max_tokens and cfg.get("fit_max_tokens") is not False))
+    monitor_remote_gpu = os.environ.get("STRATA_RPC_MONITOR_REMOTE_GPU",
+                                        (cfg.get("env") or {}).get("STRATA_RPC_MONITOR_REMOTE_GPU", "0"))
+    if str(monitor_remote_gpu) not in ("0", "1"):
+        raise SystemExit("STRATA_RPC_MONITOR_REMOTE_GPU must be 0 or 1")
+    svc.rpc_monitor_remote_gpu = str(monitor_remote_gpu) == "1"
     svc.launch_attestation = launch_attestation
     if (cfg.get("arch") or "") == "deepseek41" and vision is None and a.engine == "strata":
         # DeepSeek-V4.1 reads pictures with the engine's own tower (--vision on, the default): no separate reader process.
