@@ -219,6 +219,31 @@ add("dsml-cut-call", dsml(("read", [("path", "a.txt", True)]))[:60], finish="len
     parser="dsml", source="a DSML call cut by the token limit is no call (its text is the translator's, not checked)")
 
 
+# Open WebUI Files workspace: the model shortened the declared name and the UI showed raw XML.
+REPLACE_ARGS = {"path": "/home/user/living-world/src/water.js",
+                "old": "import * as THREE from '../vendor/three.module.js';",
+                "new": "import * as THREE from '../vendor/three.module.js';\nimport { SKY_COMMON } from './sky.js';"}
+REPLACE_XML = qwen("replace_file", **REPLACE_ARGS)
+REPLACE_TOOL = tool("replace_file_content", path=S, old=S, new=S)
+for suffix, declared in (("bare", "replace_file_content"), ("dot", "files.replace_file_content"),
+                         ("double-underscore", "files__replace_file_content")):
+    add("webui-replace-alias-" + suffix, REPLACE_XML, [(declared, REPLACE_ARGS)],
+        tools=[tool(declared, path=S, old=S, new=S)], recover=True,
+        source="Open WebUI reported replace_file XML instead of declared replace_file_content")
+add("webui-replace-exact-wins", REPLACE_XML, [("replace_file", REPLACE_ARGS)],
+    tools=[REPLACE_TOOL, tool("replace_file", path=S, old=S, new=S)], recover=True,
+    source="Explicit tool names take precedence over recovered aliases")
+add("webui-replace-ambiguous", REPLACE_XML, content=REPLACE_XML.strip(), unread=1,
+    tools=[REPLACE_TOOL, tool("files.replace_file_content", path=S, old=S, new=S)], recover=True,
+    source="Two possible replacement tools must not be guessed")
+add("webui-replace-unknown", REPLACE_XML, content=REPLACE_XML.strip(), unread=1,
+    tools=[tool("write_file", path=S, content=S)], recover=True,
+    source="An undeclared replacement operation stays text")
+add("webui-replace-canonical", qwen("replace_file_content", **REPLACE_ARGS),
+    [("replace_file_content", REPLACE_ARGS)], tools=[REPLACE_TOOL], recover=True,
+    source="The canonical replacement tool remains supported")
+
+
 def run(spec, pieces, stream_tools):
     cls = DsmlOutputParser if spec["parser"] == "dsml" else OutputParser
     p = cls(thinking=spec["thinking"], tools=spec["tools"], stream_tools=stream_tools, recover=spec["recover"],
