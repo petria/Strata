@@ -138,7 +138,7 @@ const METRICS = [
 ];
 $("metrics").innerHTML = `
   <div class="st-card metric-card rpc-gpus-card" id="rpc-gpus-card" hidden><div class="st-metric">
-    <span class="st-metric__label">${icon("gpu", "st-icon st-icon--sm")}GPUs</span>
+    <span class="st-metric__label">${icon("gpu", "st-icon st-icon--sm")}RPC Stack</span>
     <div class="rpc-gpu-identities" id="rpc-gpu-identities"></div>
   </div></div>` + METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
@@ -156,19 +156,31 @@ $("metrics").innerHTML = `
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
   </div></div>`).join("");
 
+let rpcStackIdentity = {}, rpcStackIdentityRequested = false;
 function renderRpcGpuIdentity(hardware, statics = {}) {
   const gpus = hardware.gpus || [];
   const worker = gpus.find((g) => g.remote === true && g.source === "rpc-worker");
   const card = $("rpc-gpus-card"), names = $("rpc-gpu-identities");
   card.hidden = !worker;
   if (!worker) { names.replaceChildren(); return; }
+  if (!rpcStackIdentityRequested) {
+    rpcStackIdentityRequested = true;
+    // Optional deployment metadata; CPU identities do not require an engine restart.
+    import("./rpc-stack-identity.js").then((module) => {
+      rpcStackIdentity = module.default || {};
+    }).catch(() => {});
+  }
   const coordinator = gpus.find((g) => !g.remote);
-  const labels = [coordinator?.name || statics.gpu_name || "Unknown coordinator GPU",
-                  worker.name || "Unknown RPC worker GPU"];
-  names.replaceChildren(...labels.map((name, index) => {
+  const labels = [
+    ["GPU0", coordinator?.name || statics.gpu_name || "Unknown coordinator GPU"],
+    ["GPU1", worker.name || "Unknown RPC worker GPU"],
+    ["CPU0", statics.cpu_name || rpcStackIdentity.coordinator_cpu || "Unknown coordinator CPU"],
+    ["CPU1", worker.cpu_name || rpcStackIdentity.worker_cpu || "Unknown RPC worker CPU"],
+  ];
+  names.replaceChildren(...labels.map(([label, name]) => {
     const line = document.createElement("div");
     line.className = "st-metric__sub";
-    line.textContent = `GPU${index}: ${name}`;
+    line.textContent = `${label}: ${name}`;
     return line;
   }));
 }
