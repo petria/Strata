@@ -180,7 +180,8 @@ function renderRpcGpuIdentity(hardware, statics = {}) {
   names.replaceChildren(...labels.map(([label, name]) => {
     const line = document.createElement("div");
     line.className = "st-metric__sub";
-    line.textContent = `${label}: ${name}`;
+    const displayName = label.startsWith("CPU") ? String(name).replace(/\s+\d+-Core\b.*$/i, "") : name;
+    line.textContent = `${label}: ${displayName}`;
     return line;
   }));
 }
