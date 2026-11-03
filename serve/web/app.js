@@ -136,7 +136,11 @@ const METRICS = [
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
 ];
-$("metrics").innerHTML = METRICS.map((m) => `
+$("metrics").innerHTML = `
+  <div class="st-card metric-card rpc-gpus-card" id="rpc-gpus-card" hidden><div class="st-metric">
+    <span class="st-metric__label">${icon("gpu", "st-icon st-icon--sm")}GPUs</span>
+    <div class="rpc-gpu-identities" id="rpc-gpu-identities"></div>
+  </div></div>` + METRICS.map((m) => `
   <div class="st-card metric-card"><div class="st-metric">
     <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     ${m.key === "speed" ? `<div class="speed-values">
@@ -151,6 +155,23 @@ $("metrics").innerHTML = METRICS.map((m) => `
         <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
   </div></div>`).join("");
+
+function renderRpcGpuIdentity(hardware, statics = {}) {
+  const gpus = hardware.gpus || [];
+  const worker = gpus.find((g) => g.remote === true && g.source === "rpc-worker");
+  const card = $("rpc-gpus-card"), names = $("rpc-gpu-identities");
+  card.hidden = !worker;
+  if (!worker) { names.replaceChildren(); return; }
+  const coordinator = gpus.find((g) => !g.remote);
+  const labels = [coordinator?.name || statics.gpu_name || "Unknown coordinator GPU",
+                  worker.name || "Unknown RPC worker GPU"];
+  names.replaceChildren(...labels.map((name, index) => {
+    const line = document.createElement("div");
+    line.className = "st-metric__sub";
+    line.textContent = `GPU${index}: ${name}`;
+    return line;
+  }));
+}
 
 function spark(id, values, max) {
   const svg = $(id);
@@ -414,6 +435,7 @@ function renderTotals(t) {
          `${fmt(t.output_tokens)} written${oSpeed}`;
 }
 function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
+  renderRpcGpuIdentity(hw, st);
   // model state
   // A local turn keeps metrics on "unloaded" for the whole engine start.
   const imageNow = imageLive(live);
@@ -479,12 +501,8 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
-  const gpuLabel = (g) => {
-    if (!g.remote) return `GPU ${g.index}`;
-    const age = g.sample_age_s == null ? "stale" : g.stale ? `stale ${fmt(g.sample_age_s, 0)}s` : "";
-    return `GPU ${g.index} RPC worker${g.name ? ` · ${g.name}` : ""}${age ? ` (${age})` : ""}`;
-  };
-  const per = (f) => (hw.gpus || []).map((g) => `${gpuLabel(g)}: ${f(g)}`).join(" · ");
+  const gpuLabel = (g) => `GPU${g.index}`;
+  const per = (f) => (hw.gpus || []).map((g) => `${gpuLabel(g)}: ${f(g)}`).join("\n");
   const multi = (hw.gpus || []).length > 1;
   setMetric("gpu", hw.gpu_util == null ? null : fmt(hw.gpu_util), "%",
             multi ? per((g) => (g.util == null ? "–" : `${fmt(g.util)}%`)) : st.gpu_name || (st.gpu_note ? "not available" : ""));
