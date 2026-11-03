@@ -4464,12 +4464,16 @@ int main(int argc, char** argv) {
         const bool narrow = strata::kernels::kVerifyMaxT == strata::kernels::kVerifyNarrowT;
         strata::core::LookupDefaultIn ld;
         ld.env_off = env_off, ld.narrow_window = narrow, ld.serve = o.serve, ld.multi_gpu = multi_gpu;
-        ld.layer_split = !o.layer_split.empty(), ld.batch = o.batch > 1, ld.dflash2 = o.draft == "dflash2";
+        ld.layer_split = !o.layer_split.empty() || rpc_enabled, ld.batch = o.batch > 1, ld.dflash2 = o.draft == "dflash2";
         ld.lookup_chain = o.lookup_chain > 0, ld.suffix_draft = o.suffix_draft > 0, ld.spec_at_least_2 = o.spec >= 2;
 #if defined(STRATA_GPU_METAL)
         ld.metal_build = true;   // (Metal's windows hold 8 rows and it has no 12-row window: "metal window: window size out of range")
 #endif
         o.lookup_max_t = strata::core::default_lookup_max_t(ld);
+    }
+    if (rpc_enabled && o.lookup_max_t > strata::kernels::kVerifyMaxT) {
+        std::fprintf(stderr, "strata generate: stage RPC lookup windows are bounded at %d rows\n", strata::kernels::kVerifyMaxT);
+        return 2;
     }
     if (o.lookup_max_t > 0 && o.suffix_draft > 0 && o.spec >= 2) {
         if (o.mtp_max_t == 0) o.mtp_max_t = o.spec;
