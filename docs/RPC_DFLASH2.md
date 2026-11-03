@@ -17,6 +17,8 @@ upstream's explicit `--draft dflash2`, `--draft-model PACK`,
 drafter or MTP. Both roles need the same speculative window size (at most eight)
 and the usual matching model, context, KV, split, cache and TLS settings.
 The coordinator checks that the declared tap layers match its loaded drafter.
+Use `--suffix-draft 0` on the worker: it does not run a lookup drafter and must
+not enlarge the coordinator's chosen DFlash2 window before the handshake.
 The handshake includes the drafter identity, mode, tap layout and wire revision;
 different settings are refused rather than silently running another drafter.
 
@@ -33,6 +35,13 @@ This remains layer-stage RPC, not the upstream local all-cards split engine.
 Use `split_engine: off` in the server config and choose the drafter explicitly
 while comparing releases. RPC lookup windows remain bounded by the eight-row
 stage handoff, including when v0.2.10 would enable longer local lookup windows.
+
+The HTTP launcher's model-family detection uses its canonical `model_name`.
+For a custom Flash-Next profile, keep a supported `qwen3.8-flash-next-iq3_s...`
+name (quant suffix characters may be letters, numbers, underscores or dots),
+and preserve older human-friendly identifiers as aliases. Otherwise the
+upstream launcher can strip explicit DFlash2 arguments as belonging to a
+different family. Do not rename the actual model files or change their identity.
 
 CPU-only wire checks:
 

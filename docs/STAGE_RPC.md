@@ -1,10 +1,10 @@
-# Experimental CUDA stage RPC for Strata 2.0
+# Experimental CUDA stage RPC for Strata
 
-This is an engine-only port of the experimental two-host CUDA layer-stage
-transport to Strata 2.0. It is opt-in, not upstream RPC support, and is not
-compatible with llama.cpp's RPC protocol. The normal single-host engine path
-remains the default. This port intentionally does not change Strata's HTTP
-server, Python package, telemetry service, or web UI.
+This is an optional two-host CUDA layer-stage transport, rebased onto Strata
+v0.2.10 (engine 0.1.56). It is not upstream RPC support and is not compatible
+with llama.cpp's RPC protocol. Normal single-host inference remains the default.
+The optional Monitor integration projects worker telemetry into the GPU cards;
+the public inference API is unchanged.
 
 ## Roles and execution model
 
@@ -23,6 +23,12 @@ opaque handles paired with coordinator checkpoints. Worker cache eviction
 forces a safe full prefill rather than reuse of stale state. Conversation
 cache parking/activation is supported by the engine path; disk session
 save/restore remains unsupported with RPC v1.
+
+DFlash2 is additionally supported through the optional tap extension described
+in [RPC_DFLASH2.md](RPC_DFLASH2.md). The drafter stays on the coordinator;
+the worker returns samples from the tapped prefix layers. MTP does not use the
+tap extension. RPC lookup windows are limited to eight rows; v0.2.10's automatic
+12-row standalone lookup default does not apply to RPC.
 
 TLS 1.3 with a private CA and role certificates is required. The worker binds
 to its configured private-link address and admits the configured coordinator.
@@ -63,6 +69,7 @@ this port does not add or modify an API/UI integration.
 python3 tests/rpc/test_transport.py
 python3 -m unittest tests.rpc.test_speed
 python3 -m unittest tests.rpc.test_cache_ab_replay
+python3 -m unittest tests.rpc.test_dflash2_taps
 ```
 
 `test_transport.py` exercises the TLS framing and failure rules. The speed
