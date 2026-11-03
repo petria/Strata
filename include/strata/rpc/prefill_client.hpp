@@ -1,6 +1,7 @@
 #pragma once
 #include "strata/rpc/client.hpp"
 #include "strata/rpc/serial_executor.hpp"
+#include "strata/rpc/dflash2_taps.hpp"
 #include <algorithm>
 #include <cstring>
 #include <future>
@@ -13,6 +14,10 @@ public:
         if (speed_options().has(SpeedOptions::prefill_executor)) executor_ = std::make_unique<SerialExecutor>();
     }
     ~PrefillPipeline() { if (pending_.valid()) pending_.wait(); }
+    std::vector<int> tap_layers;
+    bool taps_enabled = false;
+    int64_t tap_first = 0;
+    std::function<bool(TapBlock&&, std::string&)> on_taps;
     bool fetch(const int64_t* tokens, int64_t count, int64_t pos, int64_t remaining,
                const float* const* images, std::vector<float>& rows, std::string& error) {
         Reply reply;
@@ -54,6 +59,7 @@ private:
         for (int64_t i = 0; i < count; ++i) if (images && images[pos + i]) {
             w.u64(uint64_t(i)); w.bytes(images[pos + i], size_t(emb_) * 4);
         }
+        if (taps_enabled) w.u64(uint64_t(tap_first));
         return std::move(w.data);
     }
     Reply read(std::vector<uint8_t> body) {
@@ -63,7 +69,14 @@ private:
         if (!reply.ok) { error = reply.error; return false; }
         Reader r(reply.body); const auto handle = r.u64(); const size_t expected = size_t(count * dim_) * 4;
         const auto values = r.bytes(expected);
-        if (!handle || !r.done()) { error = "RPC prefill checkpoint/hand-off length mismatch"; return false; }
+        if (!handle || !r.good()) { error = "RPC prefill checkpoint/hand-off length mismatch"; return false; }
+        if (taps_enabled) {
+            TapBlock taps;
+            const auto first = uint64_t(std::min(pos + count, std::max(pos, tap_first)));
+            if (!read_taps(r, taps, first, uint64_t(pos + count) - first, uint64_t(emb_), tap_layers, error) ||
+                (on_taps && !on_taps(std::move(taps), error))) return false;
+        }
+        if (!r.done()) { error = "RPC prefill unexpected trailing payload"; return false; }
         rows.resize(expected / 4); std::memcpy(rows.data(), values.data(), expected);
         client_.remember_checkpoint(uint64_t(pos + count), handle); return true;
     }

@@ -13,6 +13,7 @@ struct WorkerConfig {
     std::function<std::string()> telemetry;
     // Called only after commit/prefill/restore is complete. Empty on the default path.
     std::function<bool(bool drain, std::string&)> maintenance;
+    std::vector<int> draft_tap_layers;
 };
 int serve_worker(const WorkerConfig&, core::Verifier&, prefill::Prefill&, core::SessionState&,
                  const core::ModelGeometry&, core::PoolMultiFn, void* user, float* hand_host,

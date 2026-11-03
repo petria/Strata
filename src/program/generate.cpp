@@ -607,6 +607,7 @@ bool resident_stage_swaps(strata::core::FileExpertSource& src, const std::vector
 
 struct Options {
     std::string rpc_stage, rpc_listen, rpc_allow_peer, rpc_ca, rpc_cert, rpc_key, rpc_model_id;
+    std::string rpc_dflash2_id, rpc_dflash2_taps;
     int64_t rpc_prefix_layers = 0;
     int rpc_timeout = 300;
     std::string rpc_transport = "tcp", rpc_rdma_interface;
@@ -1052,6 +1053,7 @@ void usage() {
                  "  --rpc-listen IP:PORT --rpc-allow-peer IP  Worker role, private IPv4 bind only.\n"
                  "  --rpc-ca FILE --rpc-cert FILE --rpc-key FILE  Required mutual TLS credentials.\n"
                  "  --rpc-model-id SHA256 --rpc-timeout SECONDS  Artifact identity and bounded operation timeout.\n"
+                 "  --rpc-dflash2-id SHA256 --rpc-dflash2-taps LAYERS  Opt-in DFlash2 tap protocol (both roles).\n"
                  "  --rpc-transport tcp|rdma  TCP is the default; RDMA requires STRATA_ENABLE_RPC_RDMA.\n"
                  "  --rpc-rdma-port PORT --rpc-rdma-interface IFACE  RDMA CM port (50058), optional NIC constraint.\n"
                  "  --rpc-rdma-depth N --rpc-rdma-credit-batch N  RDMA data ring depth (2/4/8/16), credit batch (1..N).\n"
@@ -3454,6 +3456,8 @@ int main(int argc, char** argv) {
         else if (a == "--rpc-cert") o.rpc_cert = next("--rpc-cert");
         else if (a == "--rpc-key") o.rpc_key = next("--rpc-key");
         else if (a == "--rpc-model-id") o.rpc_model_id = next("--rpc-model-id");
+        else if (a == "--rpc-dflash2-id") o.rpc_dflash2_id = next("--rpc-dflash2-id");
+        else if (a == "--rpc-dflash2-taps") o.rpc_dflash2_taps = next("--rpc-dflash2-taps");
         else if (a == "--rpc-prefix-layers") o.rpc_prefix_layers = std::atoll(next("--rpc-prefix-layers"));
         else if (a == "--rpc-timeout") o.rpc_timeout = std::atoi(next("--rpc-timeout"));
         else if (a == "--rpc-transport") o.rpc_transport = next("--rpc-transport");
@@ -4056,6 +4060,32 @@ int main(int argc, char** argv) {
 #endif
     const bool rpc_worker = !o.rpc_listen.empty();
     const bool rpc_enabled = rpc_worker || !o.rpc_stage.empty();
+    const bool rpc_df2 = !o.rpc_dflash2_id.empty();
+    std::vector<int> rpc_tap_layers;
+    if (rpc_df2) {
+        if (!rpc_enabled || o.rpc_dflash2_id.size() != 64 ||
+            o.rpc_dflash2_id.find_first_not_of("0123456789abcdef") != std::string::npos ||
+            o.rpc_dflash2_taps.empty() || o.rpc_dflash2_taps.back() == ',' ||
+            (!rpc_worker && (o.draft != "dflash2" || o.draft_auto || o.draft_fallback == "mtp"))) {
+            std::fprintf(stderr, "strata: RPC DFlash2 needs a SHA256, tap layers, and explicit DFlash2 without MTP fallback\n"); return 2;
+        }
+        for (size_t start = 0; start < o.rpc_dflash2_taps.size();) {
+            const size_t end = o.rpc_dflash2_taps.find(',', start);
+            const auto item = o.rpc_dflash2_taps.substr(start, end == std::string::npos ? end : end - start);
+            if (item.empty() || item.size() > 2 || item.find_first_not_of("0123456789") != std::string::npos) {
+                std::fprintf(stderr, "strata: invalid RPC DFlash2 tap layer\n"); return 2;
+            }
+            const int layer = std::stoi(item);
+            if (layer >= 47 || (!rpc_tap_layers.empty() && layer <= rpc_tap_layers.back()) || rpc_tap_layers.size() >= 16) {
+                std::fprintf(stderr, "strata: RPC DFlash2 taps must be unique ascending layers in [0,46]\n"); return 2;
+            }
+            rpc_tap_layers.push_back(layer);
+            if (end == std::string::npos) break;
+            start = end + 1;
+        }
+    } else if (!o.rpc_dflash2_taps.empty() || (rpc_enabled && !rpc_worker && o.draft == "dflash2")) {
+        std::fprintf(stderr, "strata: stage RPC DFlash2 requires --rpc-dflash2-id and --rpc-dflash2-taps on both roles\n"); return 2;
+    }
     if (o.rpc_transport != "tcp" && o.rpc_transport != "rdma") {
         std::fprintf(stderr, "strata: --rpc-transport must be tcp or rdma\n"); return 2;
     }
@@ -11825,6 +11855,19 @@ int main(int argc, char** argv) {
         if (use_df2) ver.set_taps(df2.tap_layers());
         if (batch_df2) ver.set_batch_taps(true);
 #endif
+#if defined(STRATA_HAS_STAGE_RPC)
+        if (rpc_df2) {
+#if defined(STRATA_HAVE_DFLASH2)
+            if (!rpc_worker && (!use_df2 || df2.tap_layers() != rpc_tap_layers)) {
+                std::fprintf(stderr, "strata: RPC DFlash2 pack/tap configuration mismatch\n"); return 2;
+            }
+#else
+            std::fprintf(stderr, "strata: RPC DFlash2 is not available in this build\n"); return 2;
+#endif
+            ver.set_taps(rpc_tap_layers);
+        }
+        strata::rpc::TapBlock rpc_verify_taps, rpc_prompt_taps;
+#endif
         if (!ver.init(wt, g, ss, vh, native_head.loaded() || prefill_head_alias_bound ? &native_head : nullptr,
                       batch_max_t(), err) ||
             (use_mtp && !prefill_head_alias_bound && !mtp.bind(last_st && !mtp_first ? last_st->wt : wt, last_st ? &last_st->head : &native_head,
@@ -11919,9 +11962,9 @@ int main(int argc, char** argv) {
             df2_offer_head();
             // where the drafter's weights come from: the last stage's card by default (its head rows and embedding path), as the MTP's
             const bool df2_on_last = multi_gpu && last_st != nullptr && !df2_first;
-            const bool df2_chain = n_stages > 1;   // the taps come from several verifiers (gather_taps lands them on the drafter's card)
+            const bool df2_chain = n_stages > 1 || rpc_df2;
             if (df2.device() != 0 && strata::core::native_embed() != nullptr && strata::core::native_embed()->in_vram()) why_not = "the embedding table sits in CUDA0's VRAM (STRATA_EMBED_VRAM), out of reach of the drafter's card";
-            else if (!(df2_chain ? ver.tapping_chain() : ver.tapping())) why_not = "the verifier keeps no taps here";
+            else if (!(df2_chain && !rpc_df2 ? ver.tapping_chain() : ver.tapping())) why_not = "the verifier keeps no taps here";
             else if (!df2.bind(df2_on_last ? last_st->wt : wt, multi_gpu ? &last_st->head : &native_head, df2_vocab_path(), why_not, df2_first ? last_st->dev : -1) ||
                      !df2.prepare(df2_chain ? df2.landing() : ver.tap_dev(), why_not) ||
                      !(multi_gpu ? df2_stage_prompt_taps_reserve(why_not) : sp.reserve_taps(df2.tap_layers(), 2048, g.n_embd, why_not))) {
@@ -11938,6 +11981,28 @@ int main(int argc, char** argv) {
                 if (o.draft_mtp_spec_set && o.spec > o.draft_mtp_spec) o.spec = o.draft_mtp_spec;   // the MTP drafts with its own window, not DFlash2's
             } else {
                 if (multi_gpu) df2_stage_prompt_taps_install();
+#if defined(STRATA_HAS_STAGE_RPC)
+                else if (rpc_df2) {
+                    dland.dev_id = df2.device();
+                    const size_t pitch = df2.n_taps() * size_t(g.n_embd) * sizeof(float);
+                    if (cudaMalloc((void**) &dland.dev, 2048 * pitch) != cudaSuccess) {
+                        std::fprintf(stderr, "strata: RPC DFlash2 prompt landing allocation failed\n"); return 1;
+                    }
+                    sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) {
+                        if (rpc_prompt_taps.pos != uint64_t(pos0) || rpc_prompt_taps.rows != uint64_t(rows)) {
+                            e = "RPC DFlash2 prompt tap stage mismatch"; return false;
+                        }
+                        const size_t total = rpc_tap_layers.size() * size_t(g.n_embd) * sizeof(float);
+                        const size_t remote = rpc_prompt_taps.layers.size() * size_t(g.n_embd) * sizeof(float);
+                        const size_t local = total - remote;
+                        if ((remote && cudaMemcpy2D(dland.dev, total, rpc_prompt_taps.values.data(), remote, remote, size_t(rows), cudaMemcpyHostToDevice) != cudaSuccess) ||
+                            (local && cudaMemcpy2D((char*) dland.dev + remote, total, taps, local, local, size_t(rows), cudaMemcpyDeviceToDevice) != cudaSuccess)) {
+                            e = "RPC DFlash2 prompt tap merge failed"; return false;
+                        }
+                        return df2.context(dland.dev, rows, pos0, e);
+                    };
+                }
+#endif
                 else sp.on_taps = [&](const float* taps, int64_t rows, int64_t pos0, std::string& e) -> bool { df2_tap_dump(taps, rows, pos0, (int64_t) df2.tap_layers().size() * g.n_embd); return df2.context(taps, rows, pos0, e); };
                 std::fprintf(stderr, "strata serve: DFlash2 drafter on (%s, graphs captured in %.0f ms); windows up to %d tokens; %s%s\n",
                              o.draft_model.c_str(), df2.ms_capture, o.spec, df2_solo ? "no MTP layer is loaded (--draft-fallback none)" : "the MTP layer stays as the fallback",
@@ -11948,6 +12013,19 @@ int main(int argc, char** argv) {
         // the taps of the window just run (rows 0..rows-1), where the drafter reads them: the verifier's own buffer on one card; on a layer split every
         // stage's share landed on the drafter's card (Verifier::gather_taps; the drafter's stream waits on the copies)
         auto df2_win_taps = [&](int rows, std::string& e) -> const float* {
+#if defined(STRATA_HAS_STAGE_RPC)
+            if (rpc_df2) {
+                if (rows < 0 || uint64_t(rows) > rpc_verify_taps.rows) { e = "RPC DFlash2 verify tap rows missing"; return nullptr; }
+                if (!ver.gather_taps(df2.landing(), df2.device(), 0, rows, 0, df2.stream(), e)) return nullptr;
+                const size_t total = rpc_tap_layers.size() * size_t(g.n_embd) * sizeof(float);
+                const size_t remote = rpc_verify_taps.layers.size() * size_t(g.n_embd) * sizeof(float);
+                if ((remote && cudaMemcpy2DAsync(df2.landing(), total, rpc_verify_taps.values.data(), remote, remote, size_t(rows), cudaMemcpyHostToDevice, df2.stream()) != cudaSuccess) ||
+                    cudaStreamSynchronize(df2.stream()) != cudaSuccess) {
+                    e = "RPC DFlash2 verify tap merge failed"; return nullptr;
+                }
+                return df2.landing();
+            }
+#endif
             if (n_stages <= 1) return ver.tap_dev();
             if (!ver.gather_taps(df2.landing(), df2.device(), 0, rows, 0, df2.stream(), e)) return nullptr;
             return df2.landing();
@@ -12046,13 +12124,22 @@ int main(int argc, char** argv) {
             "|" + std::to_string(o.rope_scale) + "|" + std::to_string(o.rope_freq_base) +
             "|" + std::to_string(o.rope_freq_scale) + "|" + std::to_string(o.yarn_orig_ctx) +
             "|" + std::to_string(o.yarn_ext_factor) + "|" + std::to_string(o.yarn_attn_factor) +
-            "|" + std::to_string(o.yarn_beta_fast) + "|" + std::to_string(o.yarn_beta_slow) + "|transport=" + o.rpc_transport : "";
+            "|" + std::to_string(o.yarn_beta_fast) + "|" + std::to_string(o.yarn_beta_slow) + "|transport=" + o.rpc_transport +
+            "|draft=" + (rpc_df2 ? std::string("dflash2") : o.spec > 1 ? std::string("mtp") : std::string("off")) +
+            "|draft-id=" + o.rpc_dflash2_id + "|tap-wire=1|taps=" + o.rpc_dflash2_taps : "";
         strata::rpc::Security rpc_security{o.rpc_ca, o.rpc_cert, o.rpc_key,
             rpc_worker ? "strata-stage-coordinator" : "strata-stage-worker", o.rpc_timeout,
             o.rpc_transport, o.rpc_rdma_port, o.rpc_rdma_interface, o.rpc_rdma_depth,
             o.rpc_rdma_credit_batch, o.rpc_rdma_poll_mode, o.rpc_rdma_spin_us};
         strata::rpc::Client rpc_client;
         strata::rpc::PrefillPipeline rpc_prefill(rpc_client, g.hc * g.n_embd, g.n_embd);
+        if (rpc_df2) {
+            rpc_prefill.taps_enabled = true;
+            rpc_prefill.tap_layers = strata::rpc::stage_taps(rpc_tap_layers, 0, int(o.rpc_prefix_layers));
+            rpc_prefill.on_taps = [&](strata::rpc::TapBlock&& taps, std::string&) {
+                rpc_prompt_taps = std::move(taps); return true;
+            };
+        }
         uint64_t rpc_window = 0;
         std::vector<int32_t> rpc_pending;
         // Inference owns this socket. Baseline/end snapshots, never per-token/dashboard polling.
@@ -12092,7 +12179,12 @@ int main(int argc, char** argv) {
                 std::vector<uint8_t> reply; rpc_window = rpc_client.next_window();
                 if (!rpc_client.call(strata::rpc::Op::verify, std::move(w.data), reply, e, rpc_window)) return false;
                 const size_t expected = size_t(t * strata::core::Verifier::handoff_floats(g)) * 4;
-                if (reply.size() != expected) { e = "RPC verify hand-off length mismatch"; return false; }
+                if (reply.size() < expected) { e = "RPC verify hand-off length mismatch"; return false; }
+                if (rpc_df2) {
+                    strata::rpc::Reader r(std::span<const uint8_t>(reply).subspan(expected));
+                    if (!strata::rpc::read_taps(r, rpc_verify_taps, uint64_t(pos), uint64_t(t), uint64_t(g.n_embd),
+                        rpc_prefill.tap_layers, e) || !r.done()) { if (e.empty()) e = "RPC verify trailing tap payload"; return false; }
+                } else if (reply.size() != expected) { e = "RPC verify unexpected tap payload"; return false; }
                 std::memcpy(rpc_hand_host, reply.data(), expected); rpc_pending.assign(tokens, tokens + t); return true;
             };
             ver.after_commit = [&](int keep, std::string& e) {
@@ -14060,10 +14152,16 @@ int main(int argc, char** argv) {
 #if defined(STRATA_HAS_STAGE_RPC)
         if (rpc_worker) {
             strata::rpc::WorkerConfig cfg{o.rpc_listen, o.rpc_allow_peer, rpc_identity, rpc_security,
-                                         o.max_context, o.prefill_chunk, 0, 0, 0, {}, {}};
+                                         o.max_context, o.prefill_chunk, 0, 0, 0, {}, {}, {}};
             cfg.conversation_cache_bytes = uint64_t(o.conversation_cache_mib) << 20;
             cfg.conversation_cache_floor_bytes = uint64_t(o.conversation_cache_min_free_mib) << 20;
             cfg.conversation_cache_slots = size_t(o.conversation_cache_slots);
+            if (rpc_df2) {
+                cfg.draft_tap_layers = rpc_tap_layers;
+                if (!sp.reserve_taps(rpc_tap_layers, 2048, g.n_embd, err)) {
+                    std::fprintf(stderr, "strata: RPC DFlash2 worker prompt taps: %s\n", err.c_str()); return 1;
+                }
+            }
             cfg.telemetry = [&] {
                 size_t free_b = 0, total_b = 0;
                 cudaMemGetInfo(&free_b, &total_b);
@@ -17132,6 +17230,9 @@ int main(int argc, char** argv) {
                                  (long long) std::max<int64_t>(df2.last_missing, 1));
                 if (multi_gpu) df2_stage_prompt_taps_begin(std::max<int64_t>(0, n - 2047));
                 else sp.set_taps(df2.tap_layers(), std::max<int64_t>(0, n - 2047), 2048);
+#if defined(STRATA_HAS_STAGE_RPC)
+                if (rpc_df2) rpc_prefill.tap_first = std::max<int64_t>(0, n - 2047);
+#endif
             }
 #endif
             const int64_t read_from = reread_to > 0 ? 0 : resume;
@@ -19329,11 +19430,13 @@ int main(int argc, char** argv) {
                     const strata::spec::DraftPolicy::Pick pk = kd > 0 ? policy.choose(S_mtp, kd, md) : strata::spec::DraftPolicy::Pick{};
                     if (kd > 0 && pk.lookup) {
                         dfr_lookup = true; dfr_T = pk.t; dfr_match = md;
-                        if (!df2.context(ver.tap_dev(), dfr_n, dfr_pos, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        const float* deferred_taps = df2_win_taps(dfr_n, err);
+                        if (deferred_taps == nullptr || !df2.context(deferred_taps, dfr_n, dfr_pos, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                     } else {
                         int32_t dd[strata::core::Dflash2Drafter::kDrafts];
                         float pp[strata::core::Dflash2Drafter::kDrafts];
-                        if (!df2.draft(ver.tap_dev(), dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
+                        const float* deferred_taps = df2_win_taps(dfr_n, err);
+                        if (deferred_taps == nullptr || !df2.draft(deferred_taps, dfr_n, dfr_pos, dfr_anchor, dd, pp, err)) { std::printf("ERR %s\n", err.c_str()); return 1; }
                         for (size_t i = 0; i < drafts.size() && i < (size_t) strata::core::Dflash2Drafter::kDrafts; ++i) { drafts[i] = dd[i]; dprob[i] = pp[i]; }
                     }
                 }
@@ -19699,7 +19802,8 @@ int main(int argc, char** argv) {
                     const Clock::time_point tk0 = Clock::now();
                     // queued on the idle drafter's own stream, overlapped with the other's draft; keep_sync() below waits before the next window rewrites the taps / rows
                     if (!req_df2) {
-                        if (!df2.context_async(ver.tap_dev(), a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
+                        const float* idle_taps = df2_win_taps(a + 1, err);
+                        if (idle_taps == nullptr || !df2.context_async(idle_taps, a + 1, p, err)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }
                         keep_pending = true;
                     } else if (use_mtp) {
                         if (!mtp.prefill(ver.final_R_all(), outv.data(), a + 1, p, err, false)) { if (adapt_thr.joinable()) adapt_thr.join(); std::printf("ERR %s\n", err.c_str()); return 1; }

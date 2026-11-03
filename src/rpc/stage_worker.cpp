@@ -1,6 +1,7 @@
 #include "strata/rpc/stage_worker.hpp"
 #include "strata/rpc/checkpoint_policy.hpp"
 #include "strata/rpc/response_buffer.hpp"
+#include "strata/rpc/dflash2_taps.hpp"
 #include "strata/core/conversation_snapshot.hpp"
 #include "strata/core/conversation_memory.hpp"
 #include "strata/kernels/verify_kernels.hpp"
@@ -48,6 +49,8 @@ int serve_worker(const WorkerConfig& cfg, core::Verifier& ver, prefill::Prefill&
     };
     Message req;
     ResponseBuffer response_buffer;
+    const bool draft_taps = !cfg.draft_tap_layers.empty();
+    const auto tap_layers = stage_taps(cfg.draft_tap_layers, 0, int(ss.layer_hi));
     while (wire.receive(req, error)) {
         response_buffer.begin(speed_options().has(SpeedOptions::buffer_reuse));
         auto& result = response_buffer.result;
@@ -106,6 +109,19 @@ int serve_worker(const WorkerConfig& cfg, core::Verifier& ver, prefill::Prefill&
                     if (error.empty() && ver.run(int(count), pending.data(), int64_t(pos), pool, user, unused.data(), error)) {
                         last_window = prepared = req.window; pending_pos = position; ++windows;
                         result.bytes(hand, size_t(count) * size_t(core::Verifier::handoff_floats(g)) * sizeof(float));
+                        if (draft_taps) {
+                            TapBlock taps{pos, count, uint64_t(g.n_embd), tap_layers, {}};
+                            std::vector<float> all(size_t(count) * cfg.draft_tap_layers.size() * size_t(g.n_embd));
+                            if (!ver.gather_taps_host(all.data(), 0, int(count), error)) status = 1;
+                            else {
+                                taps.values.resize(size_t(count) * tap_layers.size() * size_t(g.n_embd));
+                                for (size_t row = 0; !tap_layers.empty() && row < count; ++row)
+                                    std::copy_n(all.data() + row * cfg.draft_tap_layers.size() * size_t(g.n_embd),
+                                                tap_layers.size() * size_t(g.n_embd),
+                                                taps.values.data() + row * tap_layers.size() * size_t(g.n_embd));
+                                write_taps(result, taps);
+                            }
+                        }
                     }
                 }
             }
@@ -144,8 +160,22 @@ int serve_worker(const WorkerConfig& cfg, core::Verifier& ver, prefill::Prefill&
                         std::memcpy(p, values.data(), values.size()); rows[size_t(pos + row)] = p;
                     }
                 }
-                if (!r.done() || std::any_of(tokens.begin(), tokens.end(), [](int64_t t) { return t < 0 || t >= 248320; })) error = "malformed prefill";
+                const uint64_t tap_first = draft_taps ? r.u64() : 0;
+                if (!r.done() || tap_first > uint64_t(cfg.max_context) || std::any_of(tokens.begin(), tokens.end(), [](int64_t t) { return t < 0 || t >= 248320; })) error = "malformed prefill";
                 if (error.empty()) {
+                    const uint64_t first = std::min(pos + count, std::max(pos, tap_first));
+                    TapBlock taps{first, pos + count - first, uint64_t(g.n_embd), tap_layers, {}};
+                    if (draft_taps) {
+                        pf.set_taps(cfg.draft_tap_layers, int64_t(tap_first), 2048);
+                        pf.on_taps = [&](const float* device, int64_t rows, int64_t at, std::string& e) {
+                            if (uint64_t(rows) != taps.rows || uint64_t(at) != taps.pos) { e = "RPC prefill tap rows/position mismatch"; return false; }
+                            taps.values.resize(size_t(rows) * tap_layers.size() * size_t(g.n_embd));
+                            if (!taps.values.empty() && cudaMemcpy(taps.values.data(), device, taps.values.size() * sizeof(float), cudaMemcpyDeviceToHost) != cudaSuccess) {
+                                e = "RPC prefill tap download failed"; return false;
+                            }
+                            return true;
+                        };
+                    }
                     response_buffer.reserve_checkpoint();
                     pf.embd_rows = images ? rows.data() : nullptr;
                     pf.on_chunk = [&](const float* device, int64_t n, int64_t p, std::string& e) {
@@ -164,9 +194,14 @@ int serve_worker(const WorkerConfig& cfg, core::Verifier& ver, prefill::Prefill&
                             const auto id = ++handles; check_bytes += c.bytes(); checks.emplace(id, std::move(c)); prune();
                             CostScope serialize(profile, Cost::serialize, result.data.size());
                             response_buffer.checkpoint(id);
+                            if (draft_taps) {
+                                if (taps.values.size() != taps.rows * tap_layers.size() * size_t(g.n_embd)) error = "RPC prefill tap samples missing";
+                                else write_taps(result, taps);
+                            }
                         }
                     }
                     pf.embd_rows = nullptr; pf.on_chunk = nullptr;
+                    if (draft_taps) pf.on_taps = nullptr;
                 }
             }
         } else if (req.op == Op::snapshot) {
