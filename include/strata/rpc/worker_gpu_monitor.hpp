@@ -2,6 +2,8 @@
 
 #include <cuda_runtime.h>
 
+#include "strata/rpc/worker_system_monitor.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -103,6 +105,8 @@ inline std::string worker_gpu_monitor_json() {
     };
     char timestamp[64];
     std::snprintf(timestamp, sizeof timestamp, "%.3f", std::time(nullptr) * 1.0);
+    // The host's CPU, disk, RAM and CPU identity ride in the same object: one RPC stats reply, one row
+    // in the Monitor. serve/rpc_monitor.py copies these keys onto the worker's GPU row.
     return std::string("{\"name\":\"") + (name[0] ? name : "CUDA device") +
         "\",\"util\":" + number(util) +
         ",\"mem_used\":" + (have_memory ? std::to_string(total_bytes - free_bytes) : "null") +
@@ -111,7 +115,7 @@ inline std::string worker_gpu_monitor_json() {
         ",\"power_limit\":" + number(power_limit) + ",\"pcie_gen\":" + integer(pcie_gen) +
         ",\"pcie_gen_max\":" + integer(pcie_gen_max) + ",\"pcie_width\":" + integer(pcie_width) +
         ",\"pcie_rx_mb\":" + number(pcie_rx) + ",\"pcie_tx_mb\":" + number(pcie_tx) +
-        ",\"sampled_at\":" + timestamp + "}";
+        ",\"sampled_at\":" + timestamp + sysmon::json_fragment() + "}";
 }
 
 }  // namespace strata::rpc
