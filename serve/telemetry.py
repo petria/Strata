@@ -24,6 +24,11 @@ import time
 
 HISTORY = 60
 
+# The series the sampler keeps a curve of, so the names are one list: an RPC worker's own readings get the
+# same names with a worker_ prefix (serve/rpc_monitor.WORKER_SERIES), and the Monitor's cards plot both.
+SERIES = ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
+          "disk_read_mb", "tok_s", "prefill_tok_s_mean")
+
 
 # ------------------------------------------------------------------------------------------------ NVML
 class _Nvml:
@@ -668,8 +673,7 @@ class Telemetry:
                 continue
             with self.lock:
                 self.now = s
-                for k in ("gpu_util", "gpu_mem_used", "gpu_temp", "gpu_power", "gpu_pcie_rx_mb", "cpu", "ram_used",
-                          "disk_read_mb", "tok_s", "prefill_tok_s_mean"):
+                for k in SERIES:
                     v = s.get(k)
                     self.hist[k].append(round(v, 2) if isinstance(v, float) else v)
             self._stop.wait(1.0)

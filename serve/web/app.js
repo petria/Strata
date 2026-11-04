@@ -133,28 +133,38 @@ const METRICS = [
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
   {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
-  {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100},
-  {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info"},
+  {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100, split: true},
+  {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info", split: true},
 ];
 $("metrics").innerHTML = `
   <div class="st-card metric-card rpc-gpus-card" id="rpc-gpus-card" hidden><div class="st-metric">
     <span class="st-metric__label">${icon("gpu", "st-icon st-icon--sm")}RPC Stack</span>
     <div class="rpc-gpu-identities" id="rpc-gpu-identities"></div>
-  </div></div>` + METRICS.map((m) => `
+  </div></div>` + METRICS.map((m) => {
+  // The right-hand half of a two-part card: the Speed card's prefill, a split card's RPC worker. Both use
+  // the same markup, so the worker's number sits where Prefill sits, and its curve where prefill's curve is.
+  const right = m.key === "speed" ? "prefill" : `${m.key}-worker`;
+  return `
   <div class="st-card metric-card"><div class="st-metric">
     <span class="st-metric__label">${icon(m.icon, "st-icon st-icon--sm")}${esc(m.label)}</span>
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
+    </div>` : m.split ? `<div class="speed-values">
+      <div><span class="st-metric__value" id="mv-${m.key}">–</span><span class="st-metric__sub" id="ms-${m.key}"></span></div>
+      <div class="speed-prefill" id="mw-${m.key}" hidden><span class="st-metric__value" id="mv-${m.key}-worker">–</span>
+        <span class="st-metric__sub" id="ms-${m.key}-worker">Worker</span></div>
     </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
-      ${m.key === "speed" ? `<g id="sp-prefill" class="speed-prefill"><path class="area" fill="currentColor" opacity=".12"/>
+      ${m.key === "speed" || m.split ? `<g id="sp-${right}" class="speed-prefill">
+        <path class="area" fill="currentColor" opacity=".12"/>
         <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
-  </div></div>`).join("");
+  </div></div>`;
+}).join("");
 
 let rpcStackIdentity = {}, rpcStackIdentityRequested = false;
 function renderRpcGpuIdentity(hardware, statics = {}) {
@@ -540,16 +550,36 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
             }) : hw.gpu_pcie_rx_mb == null ? "" : `to GPU ${fmt(hw.gpu_pcie_rx_mb, hw.gpu_pcie_rx_mb < 10 ? 1 : 0)} MB/s` +
             (hw.gpu_pcie_gen && gen && hw.gpu_pcie_gen < gen ? ` · idle Gen${hw.gpu_pcie_gen}` : ""));
   spark("sp-pcie", h.gpu_pcie_rx_mb);
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", st.threads ? `${st.cores ? `${st.cores} cores · ` : ""}${st.threads} threads` : "");
+  // The worker's host readings (serve/rpc_monitor.py puts them on its row): this machine on the left, the
+  // RPC worker on the right, like the Speed card. The row carries the worker's own sample time, and the
+  // reading arrives with the request's baseline and end rather than on a timer - so an idle stack says how
+  // old the number is.
+  const worker = (hw.gpus || []).find((g) => g.source === "rpc-worker") || null;
+  const coreSub = (cores, threads) => (threads ? `${cores ? `${cores} cores · ` : ""}${threads} threads` : "");
+  const workerAge = (w) => (!w.stale ? "" : (w.sample_age_s == null ? " · old sample" : ` · ${fmt(w.sample_age_s)} s ago`));
+  const workerSub = (w, text) => `Worker${text ? ` · ${text}` : ""}${workerAge(w)}`;
+  $("mw-cpu").hidden = !worker;
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", worker ? `Coordinator · ${coreSub(st.cores, st.threads)}` : coreSub(st.cores, st.threads));
   spark("sp-cpu", h.cpu, 100);
+  if (worker) {
+    setMetric("cpu-worker", worker.cpu_pct == null ? null : fmt(worker.cpu_pct), "%", workerSub(worker, coreSub(worker.cores, worker.threads)));
+    spark("sp-cpu-worker", h.worker_cpu, 100);
+  }
   if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
+    setMetric("disk", null, "", worker ? "Coordinator needs psutil (setup installs it)" : (st.psutil ? "" : "needs psutil (setup installs it)"));
   } else {
     const big = hw.disk_read_mb >= 1000;
     setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
+              (worker ? "Coordinator · " : "") + (hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`));
   }
   spark("sp-disk", h.disk_read_mb);
+  $("mw-disk").hidden = !worker;
+  if (worker) {
+    const wr = worker.disk_read_mb, wbig = wr != null && wr >= 1000;
+    setMetric("disk-worker", wr == null ? null : (wbig ? fmt(wr / 1024, 2) : fmt(wr, wr < 10 ? 1 : 0)), wbig ? "GB/s" : "MB/s",
+              workerSub(worker, worker.disk_write_mb == null ? "" : `write ${fmt(worker.disk_write_mb, 1)} MB/s`));
+    spark("sp-disk-worker", h.worker_disk_read_mb);
+  }
 
   // context fill: the running request, else the last one
   const ctx = eng.max_context || 0;

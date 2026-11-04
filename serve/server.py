@@ -4802,6 +4802,12 @@ class Service:
         self.api_requests = collections.deque(maxlen=100)  # bounded I/O in memory; no headers or API keys
         self.request_trace = threading.local()
         self.history = collections.deque(maxlen=500)    # the last finished requests, newest last (GET /metrics)
+        # The RPC worker's CPU, disk and RAM readings, recorded as RPCMETRICS lines arrive: the local sampler
+        # reads only this machine, so the worker's curve is built here, from its own samples.
+        from serve.rpc_monitor import WORKER_SERIES
+        from serve.telemetry import HISTORY
+        self.worker_hist = {series: collections.deque(maxlen=HISTORY) for series in WORKER_SERIES.values()}
+        self.worker_sample_at = None          # the newest worker sample counted: one line, one point on the curve
         # since the server started (the Monitor's totals, issue #35)
         self.totals = {"since": time.time(), "requests": 0, "prompt_tokens": 0, "reused": 0, "output_tokens": 0,
                        "prompt_ms": 0.0, "decode_ms": 0.0,
@@ -5678,7 +5684,30 @@ class Service:
                 "conversation_cache": conversation_cache_view(engine, hist, totals, parked),
                 "requests_kept": len(hist), "totals": totals, "hardware": hardware,
                 "hardware_static":
-                tel["static"], "history": tel["history"], "time": now}
+                tel["static"], "history": self._worker_history(tel["history"], hardware), "time": now}
+
+    def _worker_history(self, local_history: dict, hardware: dict) -> dict:
+        """GET /metrics' history with the RPC worker's own series added, newest last.
+
+        The local sampler (serve/telemetry.py) can only read the machine it runs on, so the worker's CPU
+        percent, disk rates and RAM - which arrive on the RPCMETRICS line, at the baseline and the end of a
+        request - are recorded here. One line is one point: a row whose sample was counted already adds
+        nothing. A run with no RPC worker answers with the local history, unchanged.
+        """
+        from serve.rpc_monitor import WORKER_SERIES, worker_row
+        row = worker_row(hardware)
+        if row is None:
+            return local_history
+        try:
+            sampled_at = float(row.get("sampled_at"))
+        except (TypeError, ValueError):
+            sampled_at = None
+        if sampled_at is not None and (self.worker_sample_at is None or sampled_at > self.worker_sample_at):
+            self.worker_sample_at = sampled_at
+            for field, series in WORKER_SERIES.items():
+                value = row.get(field)
+                self.worker_hist[series].append(round(value, 2) if isinstance(value, float) else value)
+        return {**local_history, **{series: list(points) for series, points in self.worker_hist.items()}}
 
     def prometheus(self) -> str:
         """GET /metrics/prometheus: the totals and what is running in Prometheus' text format, under llama-server's

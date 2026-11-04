@@ -3,6 +3,20 @@
 import time
 
 
+# The worker's host readings that get their own history series (the local sampler records only this
+# machine): the field on the worker's row, and the name GET /metrics' history gives it. The same three the
+# local sampler keeps - the write rate is a card's sub-line on both hosts, never a curve of its own.
+WORKER_SERIES = {"cpu_pct": "worker_cpu", "disk_read_mb": "worker_disk_read_mb", "ram_used": "worker_ram_used"}
+
+
+def worker_row(hardware: dict) -> dict | None:
+    """The Monitor's RPC worker row, once the projection added one; None on a single-host run."""
+    for row in (hardware or {}).get("gpus") or []:
+        if row.get("source") == "rpc-worker":
+            return row
+    return None
+
+
 def add_remote_gpu(hardware: dict, engine_info: dict, enabled: bool, now: float | None = None,
                    hardware_static: dict | None = None) -> dict:
     """Return a Monitor hardware view with the RPC worker shown as an additional GPU.
@@ -50,6 +64,11 @@ def add_remote_gpu(hardware: dict, engine_info: dict, enabled: bool, now: float 
     row = {key: remote.get(key) for key in (
         "name", "util", "mem_used", "mem_total", "temp", "power", "power_limit",
         "pcie_gen", "pcie_gen_max", "pcie_width", "pcie_rx_mb", "pcie_tx_mb",
+        # The worker host's own readings: the Monitor's CPU and Disk read cards show them beside this
+        # host's, and its RPC Stack card labels the machine. They stay on the row - the top-level cpu,
+        # ram and disk figures are the coordinator's, and a mean of two hosts' CPU percent answers nothing.
+        "cpu_pct", "cores", "threads", "cpu_name", "ram_used", "ram_total",
+        "disk_read_mb", "disk_write_mb",
     )}
     row.update(index=remote_index, remote=True, source="rpc-worker", sampled_at=worker_sample_at,
                sample_age_s=round(age, 1) if age is not None else None, stale=age is None or age > 10)
