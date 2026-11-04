@@ -313,6 +313,12 @@ bool env_on(const char* name) {
 const bool g_coherent = env_on("STRATA_VERIFY_COHERENT");
 const bool g_doorbell_store = env_on("STRATA_DOORBELL_STORE");
 #endif
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_USE_SYCL)
+bool cuda_doorbell_store() {
+    const char* mode = std::getenv("STRATA_CUDA_DOORBELL_MODE");
+    return mode != nullptr && std::strcmp(mode, "store") == 0;
+}
+#endif
 const bool g_trace = env_on("STRATA_VERIFY_TRACE");
 // STRATA_LAUNCH_PROBE (STRIX-TDR): process start, and the first windows' launch timing
 const Clock::time_point g_proc_t0 = Clock::now();
@@ -878,6 +884,18 @@ bool Verifier::set_logit_bias(const std::vector<float>& bias, std::string& err) 
 
 bool Verifier::init(const WeightTable& wt, const ModelGeometry& g, SessionState& ss, const VerifyHits& hits,
                     const NativeHead* head, int max_t, std::string& err) {
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_USE_SYCL)
+    const char* doorbell_mode = std::getenv("STRATA_CUDA_DOORBELL_MODE");
+    if (doorbell_mode && std::strcmp(doorbell_mode, "increment") != 0 && std::strcmp(doorbell_mode, "store") != 0) {
+        err = "STRATA_CUDA_DOORBELL_MODE must be increment or store"; return false;
+    }
+    static const bool logged = [] {
+        std::fprintf(stderr, "strata verify: CUDA doorbell publisher=%s\n", cuda_doorbell_store() ? "store" : "increment");
+        return true;
+    }();
+    (void) logged;
+#endif
+
     g_diag_verifier.store(this);
     diag_verify_fn().store(&diag_active_verifier);
     for (auto& slot : g_live) {
@@ -2258,6 +2276,19 @@ bool Verifier::record_window(int T, cudaStream_t cs, std::string& err) {
                 doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K, m_x_ + tb * N,
                                        m_ids_ + tb * K, m_w_ + tb * K, m_seq_, (uint32_t) ((l - lb_) * G + grp + 1), cs);
             else
+#endif
+#if !defined(STRATA_USE_HIP) && !defined(STRATA_GPU_METAL) && !defined(STRATA_USE_SYCL)
+            if (cuda_doorbell_store()) {
+                const uint32_t value = (uint32_t) ((l - lb_) * G + grp + 1);
+                if (remote_opt_ || always_publish_)
+                    doorbell_publish_value(xm, ids_ + tb * K, w_ + tb * K, (int64_t) n * N, (int64_t) n * K,
+                                           m_x_ + tb * N, m_ids_ + tb * K, m_w_ + tb * K, m_seq_, value, cs);
+                else {
+                    const int32_t* layer_res = hits_.d_res != nullptr ? hits_.d_res + l * g.n_expert : nullptr;
+                    doorbell_publish_res_value(xm, ids_ + tb * K, layer_res, (int) g.n_expert, (int64_t) n * N,
+                                               (int64_t) n * K, m_x_ + tb * N, m_ids_ + tb * K, m_seq_, value, cs);
+                }
+            } else
 #endif
             // #578: the helper GPUs reduce with the routing weights - publish them; set_always_publish: the rows
             // whatever the device's residency table says (pipelined windows)

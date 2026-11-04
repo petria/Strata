@@ -350,6 +350,29 @@ __global__ void doorbell_publish_res_kernel(const float* __restrict__ x, const i
     }
 }
 
+__global__ void doorbell_publish_res_value_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
+                                            const int32_t* __restrict__ d_res, int n_expert, int n, int k,
+                                            float* x_out, int32_t* ids_out, uint32_t* seq, uint32_t value) {
+    int any_miss = 0;
+    if ((int) threadIdx.x < k) {
+        const int32_t id = ids[threadIdx.x];
+        ids_out[threadIdx.x] = id;
+        if (d_res == nullptr || id < 0 || id >= n_expert || d_res[id] < 0) any_miss = 1;
+    }
+    if (__syncthreads_or(any_miss)) {
+        for (int i = threadIdx.x; i < n; i += blockDim.x) x_out[i] = x[i];
+        __threadfence_system();
+    } else if ((int) threadIdx.x < k) {
+        __threadfence_system();
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+        __threadfence_system();
+        *(volatile uint32_t*) seq = value;
+        __threadfence_system();
+    }
+}
+
 // #649 (HIP, STRATA_DOORBELL_STORE=1): the same publish, but the ring is STORED (the step's own number, known at
 // capture) instead of read-modify-written over PCIe - one store, no read of host memory from the GPU.
 __global__ void doorbell_publish_value_kernel(const float* __restrict__ x, const int32_t* __restrict__ ids,
@@ -372,6 +395,14 @@ void doorbell_publish_value(const float* x, const int32_t* ids, const float* wei
     if (k > 1024) { std::fprintf(stderr, "doorbell_publish: k too large\n"); std::exit(1); }
     doorbell_publish_value_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(x, ids, weights, (int) n, (int) k, x_out,
                                                                           ids_out, weights_out, d_seq, value);
+}
+
+void doorbell_publish_res_value(const float* x, const int32_t* ids, const int32_t* d_res, int n_expert, int64_t n, int64_t k,
+                                float* x_out, int32_t* ids_out, uint32_t* d_seq, uint32_t value, void* stream) {
+    if (k > 1024) { std::fprintf(stderr, "doorbell_publish_res_value: k too large\n"); std::exit(1); }
+    doorbell_publish_res_value_kernel<<<1, 1024, 0, (cudaStream_t) stream>>>(x, ids, d_res, n_expert, (int) n, (int) k,
+                                                                        x_out, ids_out, d_seq, value);
+    check_launch("doorbell_publish_res_value");
 }
 
 void doorbell_publish(const float* x, const int32_t* ids, const float* weights, int64_t n, int64_t k, float* x_out,
