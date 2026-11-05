@@ -11,7 +11,9 @@
 // partitions (sda1) are skipped and virtual devices (loop0) count.
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -274,6 +276,12 @@ struct Sampler {
 
 class Monitor {
   public:
+    ~Monitor() {
+        stopping_.store(true, std::memory_order_relaxed);
+        wake_.notify_one();
+        if (thread_.joinable()) thread_.join();
+    }
+
     // Prepares the first sample once, so the first reply answers with the identity and RAM, and starts
     // the thread that measures the rates. Every later Op::stats reply only reads the newest sample.
     void start() {
@@ -284,7 +292,7 @@ class Monitor {
                 std::lock_guard<std::mutex> guard(mu_);
                 latest_ = first;
             }
-            std::thread([this, sampler] { loop(sampler); }).detach();
+            thread_ = std::thread([this, sampler] { loop(sampler); });
         });
     }
 
@@ -295,8 +303,10 @@ class Monitor {
 
   private:
     void loop(Sampler sampler) {
-        for (;;) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+        std::unique_lock<std::mutex> wait_lock(wait_mu_);
+        while (!wake_.wait_for(wait_lock, std::chrono::seconds(1), [this] {
+            return stopping_.load(std::memory_order_relaxed);
+        })) {
             const Sample next = sampler.step();
             std::lock_guard<std::mutex> guard(mu_);
             latest_ = next;
@@ -306,6 +316,10 @@ class Monitor {
     std::once_flag once_;
     std::mutex mu_;
     Sample latest_;
+    std::atomic<bool> stopping_{false};
+    std::mutex wait_mu_;
+    std::condition_variable wake_;
+    std::thread thread_;
 };
 
 inline Monitor& monitor() {
