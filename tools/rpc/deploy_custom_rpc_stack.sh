@@ -7,6 +7,7 @@ if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
   echo "Commit or remove local changes before deployment." >&2
   exit 2
 fi
+cmake --build "$ROOT/build-v0210-sm86-rdma" --target strata --parallel 8
 REV=$(git -C "$ROOT" rev-parse HEAD)
 REMOTE_BASE=/home/operator/.local/share/strata-rpc
 RELEASE="$REMOTE_BASE/releases/$REV"
