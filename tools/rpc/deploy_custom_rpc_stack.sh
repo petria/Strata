@@ -38,7 +38,7 @@ cmake --build "$build" --target strata --parallel 12
 
 cmake -S "$release/tools/vision" -B "$vision_build" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DLLAMA_DIR="$release/third_party/llama.cpp" \
+  -DLLAMA_DIR="$build/_deps/strata_llamacpp-src" \
   -DSTRATA_VISION_CUDA=OFF \
   -DSTRATA_PORTABLE=OFF
 cmake --build "$vision_build" --target strata-vision --parallel 12
