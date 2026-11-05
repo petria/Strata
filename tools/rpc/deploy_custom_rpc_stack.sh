@@ -57,6 +57,9 @@ stamp=$(date -u +%Y%m%dT%H%M%SZ)
 unit="$HOME/.config/systemd/user/strata-swift-iq3s-rpc-coordinator.service"
 if [[ -f "$unit" ]]; then cp -a "$unit" "$base/backups/coordinator.service.$stamp"; fi
 cp "$release/packaging/rpc/systemd/strata-swift-iq3s-rpc-coordinator.service" "$unit"
+proxy_unit="$HOME/.config/systemd/user/codex-llama-proxy.service"
+if [[ -f "$proxy_unit" ]]; then cp -a "$proxy_unit" "$base/backups/codex-llama-proxy.service.$stamp"; fi
+cp "$release/packaging/rpc/systemd/codex-llama-proxy.service" "$proxy_unit"
 ln -sfn "$release" "$base/current.next"
 mv -Tf "$base/current.next" "$base/current"
 systemctl --user daemon-reload
@@ -92,6 +95,19 @@ else:
     raise SystemExit(f"Coordinator health did not recover: {last_error}")
 PY
 
+ssh "$REMOTE" systemctl --user restart codex-llama-proxy.service
+python3 - <<'PY'
+import json
+import urllib.request
+
+with urllib.request.urlopen("http://192.0.2.10:8081/health", timeout=5) as response:
+    health = json.load(response)
+if health.get("status") != "ok" or not health.get("loaded"):
+    raise SystemExit(f"Codex proxy did not reach the Strata coordinator: {health}")
+print("Codex proxy health:", json.dumps(health, sort_keys=True))
+PY
+
 ssh "$REMOTE" systemctl --user is-active --quiet strata-swift-iq3s-rpc-coordinator.service
+ssh "$REMOTE" systemctl --user is-active --quiet codex-llama-proxy.service
 systemctl --user is-active --quiet strata-swift-iq3s-rpc-worker.service
 echo "Deployed Strata RPC runtime $REV to $REMOTE and restarted both services."

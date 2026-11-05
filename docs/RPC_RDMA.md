@@ -24,8 +24,10 @@ The custom Swift IQ3_S profile is stored in
 use the same tracked worker/coordinator launcher in
 [`tools/rpc/strata_stage_rpc.py`](../tools/rpc/strata_stage_rpc.py). The worker
 runs from this checkout. The 5090 uses a generated runtime bundle made from this
-checkout; the bundle has no Git metadata. Keep model packs, model weights and TLS
-private keys in their existing external data/state directories.
+checkout; the bundle has no Git metadata. The active Codex Responses proxy is
+also tracked in `tools/rpc/codex_llama_proxy.py` and served from that bundle.
+Keep model packs, model weights and TLS private keys in their existing external
+data/state directories.
 
 The profile templates use `STRATA_ROOT`, `MODEL_DATA_ROOT`, `TLS_DIR`, and
 `STATE_DIR` to resolve host paths. The worker service template is in
@@ -35,13 +37,15 @@ then restart `strata-swift-iq3s-rpc-worker.service`. For the coordinator, prepar
 a runtime bundle under `~/.local/share/strata-rpc/current`, install its unit on
 the 5090, and keep the matching Python environment under
 `~/.local/share/strata-rpc/python-env`. The active Swift IQ3_S profile uses a
-CPU vision reader and the committed `data/expert-profile.bin` file.
+CPU vision reader and the committed `data/expert-profile.bin` file. The bundle
+also supplies `codex-llama-proxy.service` on port 8081.
 
 From a clean, committed checkout, run
 `tools/rpc/deploy_custom_rpc_stack.sh [ssh-host]` to archive the current commit,
 build the coordinator engine and CPU vision reader on the 5090, install the
-coordinator unit, switch the runtime symlink, restart both services, and wait for
-the coordinator health check. Model files and TLS credentials are not copied.
+coordinator and proxy units, switch the runtime symlink, restart the worker,
+coordinator and proxy, and wait for both health checks. Model files and TLS
+credentials are not copied.
 
 Do not remove an older runtime checkout until its engine binary and the Python
 server bundle have been copied to the runtime directory and the new service has

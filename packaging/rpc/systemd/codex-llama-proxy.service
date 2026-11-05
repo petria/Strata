@@ -1,0 +1,15 @@
+[Unit]
+Description=Strata custom stack Codex Responses compatibility proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /home/operator/.local/share/strata-rpc/current/tools/rpc/codex_llama_proxy.py --listen 192.0.2.10:8081 --upstream http://192.0.2.10:8080 --stats-file /home/operator/.local/state/codex-llama-proxy/stats.jsonl --debug
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+WorkingDirectory=/home/operator/.local/share/strata-rpc/current
+
+[Install]
+WantedBy=default.target
