@@ -47,6 +47,21 @@ install -D -m 755 "$vision_build/bin/strata-vision" "$release/engine/strata-visi
 test -x "$build/strata"
 test -f "$release/data/expert-profile.bin"
 
+# FetchContent keeps Git metadata for its source checkout. Runtime bundles only
+# need the fetched source and built artifacts, not a nested repository.
+python3 - "$release" <<'CLEAN_GIT_METADATA'
+from pathlib import Path
+import shutil
+import sys
+
+root = Path(sys.argv[1])
+for metadata in root.rglob(".git"):
+    if metadata.is_dir():
+        shutil.rmtree(metadata)
+    else:
+        metadata.unlink()
+CLEAN_GIT_METADATA
+
 if [[ ! -x "$base/python-env/bin/python" ]]; then
   python3 -m venv "$base/python-env"
   "$base/python-env/bin/python" -m pip install -r "$release/requirements.txt"
