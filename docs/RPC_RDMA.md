@@ -17,6 +17,36 @@ that link; it does not change any live inference service.
 
 ## Build and runtime settings
 
+### Custom 3090 + 5090 stack
+
+The custom Swift IQ3_S profile is stored in
+[`profiles/rpc/swift-iq3s-v0210`](../profiles/rpc/swift-iq3s-v0210). Both hosts
+use the same tracked worker/coordinator launcher in
+[`tools/rpc/strata_stage_rpc.py`](../tools/rpc/strata_stage_rpc.py). The worker
+runs from this checkout. The 5090 uses a generated runtime bundle made from this
+checkout; the bundle has no Git metadata. Keep model packs, model weights and TLS
+private keys in their existing external data/state directories.
+
+The profile templates use `STRATA_ROOT`, `MODEL_DATA_ROOT`, `TLS_DIR`, and
+`STATE_DIR` to resolve host paths. The worker service template is in
+[`packaging/rpc/systemd`](../packaging/rpc/systemd). To install the worker unit,
+copy its file to `~/.config/systemd/user/`, run `systemctl --user daemon-reload`,
+then restart `strata-swift-iq3s-rpc-worker.service`. For the coordinator, prepare
+a runtime bundle under `~/.local/share/strata-rpc/current`, install its unit on
+the 5090, and keep the matching Python environment under
+`~/.local/share/strata-rpc/python-env`. The active Swift IQ3_S profile uses a
+CPU vision reader and the committed `data/expert-profile.bin` file.
+
+From a clean, committed checkout, run
+`tools/rpc/deploy_custom_rpc_stack.sh [ssh-host]` to archive the current commit,
+build the coordinator engine and CPU vision reader on the 5090, install the
+coordinator unit, switch the runtime symlink, restart both services, and wait for
+the coordinator health check. Model files and TLS credentials are not copied.
+
+Do not remove an older runtime checkout until its engine binary and the Python
+server bundle have been copied to the runtime directory and the new service has
+passed the health and RPC readiness checks.
+
 Build stage RPC with `-DSTRATA_ENABLE_STAGE_RPC=ON`. Native RDMA additionally needs
 `-DSTRATA_ENABLE_RPC_RDMA=ON`, Linux RDMA headers and libraries (`libibverbs` and
 `librdmacm`), and OpenSSL. An RDMA request fails when the backend was not built.

@@ -1,0 +1,19 @@
+[Unit]
+Description=Strata custom Swift IQ3_S RPC worker RTX 3090
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/operator/AI-tools/Strata-rdma
+Environment=STRATA_ROOT=/home/operator/AI-tools/Strata-rdma
+Environment=MODEL_DATA_ROOT=/srv/storage/llm_stuff/strata-data
+Environment=TLS_DIR=/home/operator/.local/share/strata-stage-rpc/tls
+ExecStart=/usr/bin/python3 /home/operator/AI-tools/Strata-rdma/tools/rpc/strata_stage_rpc.py worker --config /home/operator/AI-tools/Strata-rdma/profiles/rpc/swift-iq3s-v0210/worker.json
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=120
+StandardOutput=append:/home/operator/.local/state/strata-stage-rpc/swift-iq3s-v0210/worker.log
+StandardError=append:/home/operator/.local/state/strata-stage-rpc/swift-iq3s-v0210/worker.log
+
+[Install]
+WantedBy=default.target

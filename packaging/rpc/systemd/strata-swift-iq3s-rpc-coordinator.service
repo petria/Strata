@@ -1,0 +1,21 @@
+[Unit]
+Description=Strata custom Swift IQ3_S RPC coordinator RTX 5090
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/home/operator/.local/share/strata-rpc/current
+Environment=STRATA_ROOT=/home/operator/.local/share/strata-rpc/current
+Environment=MODEL_DATA_ROOT=/srv/storage/llm_stuff/strata-2.0-baseline-data
+Environment=TLS_DIR=/home/operator/.local/share/strata-stage-rpc/tls
+Environment=STATE_DIR=/home/operator/.local/state/strata-stage-rpc/swift-iq3s-v0210
+Environment=STRATA_API_KEY=none
+ExecStart=/home/operator/.local/share/strata-rpc/python-env/bin/python /home/operator/.local/share/strata-rpc/current/tools/rpc/strata_stage_rpc.py coordinator --config /home/operator/.local/share/strata-rpc/current/profiles/rpc/swift-iq3s-v0210/coordinator.json --state-dir /home/operator/.local/state/strata-stage-rpc/swift-iq3s-v0210 --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=120
+StandardOutput=append:/home/operator/.local/state/strata-stage-rpc/swift-iq3s-v0210/coordinator.log
+StandardError=append:/home/operator/.local/state/strata-stage-rpc/swift-iq3s-v0210/coordinator.log
+
+[Install]
+WantedBy=default.target
