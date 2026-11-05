@@ -148,12 +148,45 @@
             </svg>
             <div class="ctx-gauge__label"><span class="ctx-gauge__pct" id="ctx-pct">0%</span><span class="muted" id="ctx-sub">&ndash;</span></div>
           </div>
-          <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
-          <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
-          <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
-          <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
-          <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+          <div class="resource-gauge">
+            <div id="slots-single">
+              <div class="bar-row"><span>Experts in VRAM</span><span class="muted" id="slots-text">&ndash;</span></div>
+              <div class="st-progress"><div class="st-progress__bar" id="slots-bar" style="width:0%"></div></div>
+            </div>
+            <div class="resource-rpc" id="slots-rpc" hidden>
+              <div class="bar-row"><span>Experts in VRAM</span></div>
+              <div class="resource-gpu-row"><div class="bar-row"><span class="resource-gpu-label" id="slots-gpu0-label">NODE #0</span><span class="muted" id="slots-gpu0-text">&ndash;</span></div>
+                <div class="st-progress"><div class="st-progress__bar" id="slots-gpu0-bar" style="width:0%"></div></div></div>
+              <div class="resource-gpu-row"><div class="bar-row"><span class="resource-gpu-label" id="slots-gpu1-label">NODE #1</span><span class="muted" id="slots-gpu1-text">&ndash;</span></div>
+                <div class="st-progress"><div class="st-progress__bar" id="slots-gpu1-bar" style="width:0%"></div></div></div>
+            </div>
+          </div>
+          <div class="resource-gauge">
+            <div id="ram-single">
+              <div class="bar-row"><span>System RAM</span><span class="muted" id="ram-text">&ndash;</span></div>
+              <div class="st-progress" id="ram-progress"><div class="st-progress__bar" id="ram-bar" style="width:0%"></div></div>
+            </div>
+            <div class="resource-rpc" id="ram-rpc" hidden>
+              <div class="bar-row"><span>System RAM</span></div>
+              <div class="resource-gpu-row"><div class="bar-row"><span class="resource-gpu-label" id="ram-gpu0-label">NODE #0</span><span class="muted" id="ram-gpu0-text">&ndash;</span></div>
+                <div class="st-progress" id="ram-gpu0-progress"><div class="st-progress__bar" id="ram-gpu0-bar" style="width:0%"></div></div></div>
+              <div class="resource-gpu-row"><div class="bar-row"><span class="resource-gpu-label" id="ram-gpu1-label">NODE #1</span><span class="muted" id="ram-gpu1-text">&ndash;</span></div>
+                <div class="st-progress" id="ram-gpu1-progress"><div class="st-progress__bar" id="ram-gpu1-bar" style="width:0%"></div></div></div>
+            </div>
+          </div>
+          <div class="resource-gauge">
+            <div id="temp-single">
+              <div class="bar-row"><span>GPU temperature</span><span class="muted" id="temp-text">&ndash;</span></div>
+              <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-bar" style="width:0%"></div></div>
+            </div>
+            <div class="resource-rpc" id="temp-rpc" hidden>
+              <div class="bar-row"><span>GPU temperature</span></div>
+              <div class="resource-gpu-row"><div class="bar-row"><span class="resource-gpu-label" id="temp-gpu0-label">NODE #0</span><span class="muted" id="temp-gpu0-text">&ndash;</span></div>
+                <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-gpu0-bar" style="width:0%"></div></div></div>
+              <div class="resource-gpu-row"><div class="bar-row"><span class="resource-gpu-label" id="temp-gpu1-label">NODE #1</span><span class="muted" id="temp-gpu1-text">&ndash;</span></div>
+                <div class="st-progress" data-tone="warn"><div class="st-progress__bar" id="temp-gpu1-bar" style="width:0%"></div></div></div>
+            </div>
+          </div>
         </div>
         <div class="st-card req-card">
           <div class="req-head"><span class="card-title">Recent requests</span>

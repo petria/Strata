@@ -75,11 +75,24 @@ class SplitCards(unittest.TestCase):
         self.assertTrue(plotted <= set(WORKER_SERIES.values()),
                         f"the page plots a series the server does not record: {sorted(plotted - set(WORKER_SERIES.values()))}")
 
-    def test_an_old_worker_sample_says_so(self):
-        self.assertRegex(self.src, r'stale[\s\S]{0,120}sample_age_s[\s\S]{0,60}s ago')
+    def test_worker_subtitles_have_no_role_prefix_or_age_counter(self):
+        self.assertNotIn("Coordinator ·", self.src)
+        self.assertNotIn("Worker ·", self.src)
+        self.assertNotIn("stale", self.src)
+        self.assertNotIn("sample_age_s", self.src)
+        self.assertNotIn("s ago", self.src)
 
     def test_the_rpc_stack_card_labels_the_worker_from_its_own_row(self):
         self.assertIn('["CPU1", worker.cpu_name', self.src)
+
+    def test_rpc_stack_groups_cpu_and_gpu_rows_under_each_node(self):
+        positions = [self.src.index(value) for value in (
+            'title: "NODE #0"', '["CPU0", statics.cpu_name', '["GPU0", coordinator?.name',
+            'title: "NODE #1"', '["CPU1", worker.cpu_name', '["GPU1", worker.name',
+        )]
+        self.assertEqual(sorted(positions), positions)
+        self.assertIn('group.className = "rpc-node"', self.src)
+        self.assertIn('heading.className = "rpc-node__heading"', self.src)
 
 
 if __name__ == "__main__":

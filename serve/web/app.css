@@ -95,7 +95,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4); }
 .metric-card { padding: var(--st-s-4) var(--st-s-5); }
 .rpc-gpus-card[hidden] { display: none; }
-.rpc-gpu-identities { display: grid; gap: var(--st-s-2); overflow-wrap: anywhere; }
+.rpc-gpu-identities { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+                      align-items: start; gap: var(--st-s-3) var(--st-s-5); overflow-wrap: anywhere; }
+.rpc-node { display: grid; gap: var(--st-s-1); min-width: 0; }
+.rpc-node__heading { font-size: var(--st-fs-xs); font-weight: var(--st-fw-bold); letter-spacing: .05em; color: var(--st-ink-muted); }
 .metric-card .st-metric__sub { white-space: pre-line; }
 .st-metric__value small { font-size: var(--st-fs-md); font-weight: var(--st-fw-medium); color: var(--st-ink-muted); margin-left: 4px; }
 .st-metric__sub { font-size: var(--st-fs-xs); color: var(--st-ink-muted); font-variant-numeric: tabular-nums; min-height: 1em; }
@@ -107,8 +110,15 @@ main { flex: 1; min-height: 0; display: flex; }
 .st-metric__spark .speed-prefill { color: color-mix(in srgb, var(--st-accent) 65%, black); }
 .st-metric__spark[data-tone="warn"] { color: var(--st-warn); }
 .st-metric__spark[data-tone="info"] { color: var(--st-info); }
-.monitor-row { display: grid; grid-template-columns: minmax(min(260px, 100%), 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); }
+.monitor-row { display: grid; grid-template-columns: minmax(min(260px, 100%), 1fr) minmax(0, 2.4fr); gap: var(--st-s-4); align-items: stretch; }
+.monitor-row > .st-card { align-self: stretch; }
 .ctx-card { display: flex; flex-direction: column; gap: var(--st-s-2); }
+.resource-gauge { min-width: 0; }
+.resource-rpc { display: flex; flex-direction: column; gap: var(--st-s-1); }
+.resource-rpc[hidden] { display: none; }
+.resource-gpu-row { min-width: 0; }
+.resource-gpu-row .bar-row { margin-top: var(--st-s-1); }
+.resource-gpu-label { color: var(--st-ink-muted); }
 .ctx-gauge { position: relative; width: 150px; max-width: 100%; aspect-ratio: 1; height: auto; margin: var(--st-s-2) auto var(--st-s-3); }
 .ctx-gauge .st-gauge { width: 100%; height: 100%; }
 .ctx-gauge .st-gauge__fill { transition: stroke-dasharray 400ms var(--st-ease); }

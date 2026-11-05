@@ -153,7 +153,7 @@ $("metrics").innerHTML = `
     </div>` : m.split ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-${m.key}">–</span><span class="st-metric__sub" id="ms-${m.key}"></span></div>
       <div class="speed-prefill" id="mw-${m.key}" hidden><span class="st-metric__value" id="mv-${m.key}-worker">–</span>
-        <span class="st-metric__sub" id="ms-${m.key}-worker">Worker</span></div>
+        <span class="st-metric__sub" id="ms-${m.key}-worker"></span></div>
     </div>` : `<span class="st-metric__value" id="mv-${m.key}">–</span>
     <span class="st-metric__sub" id="ms-${m.key}"></span>`}
     <svg class="st-metric__spark" id="sp-${m.key}" viewBox="0 0 100 32" preserveAspectRatio="none"${m.tone ? ` data-tone="${m.tone}"` : ""}>
@@ -181,18 +181,31 @@ function renderRpcGpuIdentity(hardware, statics = {}) {
     }).catch(() => {});
   }
   const coordinator = gpus.find((g) => !g.remote);
-  const labels = [
-    ["GPU0", coordinator?.name || statics.gpu_name || "Unknown coordinator GPU"],
-    ["GPU1", worker.name || "Unknown RPC worker GPU"],
-    ["CPU0", statics.cpu_name || rpcStackIdentity.coordinator_cpu || "Unknown coordinator CPU"],
-    ["CPU1", worker.cpu_name || rpcStackIdentity.worker_cpu || "Unknown RPC worker CPU"],
+  const nodes = [
+    {title: "NODE #0", rows: [
+      ["CPU0", statics.cpu_name || rpcStackIdentity.coordinator_cpu || "Unknown CPU"],
+      ["GPU0", coordinator?.name || statics.gpu_name || "Unknown GPU"],
+    ]},
+    {title: "NODE #1", rows: [
+      ["CPU1", worker.cpu_name || rpcStackIdentity.worker_cpu || "Unknown CPU"],
+      ["GPU1", worker.name || "Unknown GPU"],
+    ]},
   ];
-  names.replaceChildren(...labels.map(([label, name]) => {
-    const line = document.createElement("div");
-    line.className = "st-metric__sub";
-    const displayName = label.startsWith("CPU") ? String(name).replace(/\s+\d+-Core\b.*$/i, "") : name;
-    line.textContent = `${label}: ${displayName}`;
-    return line;
+  names.replaceChildren(...nodes.map(({title, rows}) => {
+    const group = document.createElement("section");
+    group.className = "rpc-node";
+    const heading = document.createElement("div");
+    heading.className = "rpc-node__heading";
+    heading.textContent = title;
+    const lines = rows.map(([label, name]) => {
+      const line = document.createElement("div");
+      line.className = "st-metric__sub";
+      const displayName = label.startsWith("CPU") ? String(name).replace(/\s+\d+-Core\b.*$/i, "") : name;
+      line.textContent = `${label}: ${displayName}`;
+      return line;
+    });
+    group.replaceChildren(heading, ...lines);
+    return group;
   }));
 }
 
@@ -556,28 +569,26 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   // old the number is.
   const worker = (hw.gpus || []).find((g) => g.source === "rpc-worker") || null;
   const coreSub = (cores, threads) => (threads ? `${cores ? `${cores} cores · ` : ""}${threads} threads` : "");
-  const workerAge = (w) => (!w.stale ? "" : (w.sample_age_s == null ? " · old sample" : ` · ${fmt(w.sample_age_s)} s ago`));
-  const workerSub = (w, text) => `Worker${text ? ` · ${text}` : ""}${workerAge(w)}`;
   $("mw-cpu").hidden = !worker;
-  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", worker ? `Coordinator · ${coreSub(st.cores, st.threads)}` : coreSub(st.cores, st.threads));
+  setMetric("cpu", hw.cpu == null ? null : fmt(hw.cpu), "%", coreSub(st.cores, st.threads));
   spark("sp-cpu", h.cpu, 100);
   if (worker) {
-    setMetric("cpu-worker", worker.cpu_pct == null ? null : fmt(worker.cpu_pct), "%", workerSub(worker, coreSub(worker.cores, worker.threads)));
+    setMetric("cpu-worker", worker.cpu_pct == null ? null : fmt(worker.cpu_pct), "%", coreSub(worker.cores, worker.threads));
     spark("sp-cpu-worker", h.worker_cpu, 100);
   }
   if (hw.disk_read_mb == null) {
-    setMetric("disk", null, "", worker ? "Coordinator needs psutil (setup installs it)" : (st.psutil ? "" : "needs psutil (setup installs it)"));
+    setMetric("disk", null, "", st.psutil ? "" : "needs psutil (setup installs it)");
   } else {
     const big = hw.disk_read_mb >= 1000;
     setMetric("disk", big ? fmt(hw.disk_read_mb / 1024, 2) : fmt(hw.disk_read_mb, hw.disk_read_mb < 10 ? 1 : 0), big ? "GB/s" : "MB/s",
-              (worker ? "Coordinator · " : "") + (hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`));
+              hw.disk_write_mb == null ? "" : `write ${fmt(hw.disk_write_mb, 1)} MB/s`);
   }
   spark("sp-disk", h.disk_read_mb);
   $("mw-disk").hidden = !worker;
   if (worker) {
     const wr = worker.disk_read_mb, wbig = wr != null && wr >= 1000;
     setMetric("disk-worker", wr == null ? null : (wbig ? fmt(wr / 1024, 2) : fmt(wr, wr < 10 ? 1 : 0)), wbig ? "GB/s" : "MB/s",
-              workerSub(worker, worker.disk_write_mb == null ? "" : `write ${fmt(worker.disk_write_mb, 1)} MB/s`));
+              worker.disk_write_mb == null ? "" : `write ${fmt(worker.disk_write_mb, 1)} MB/s`);
     spark("sp-disk-worker", h.worker_disk_read_mb);
   }
 
@@ -600,6 +611,52 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   if (ramPct > 92) $("ram-progress").dataset.tone = "danger"; else delete $("ram-progress").dataset.tone;
   $("temp-text").textContent = hw.gpu_temp == null ? "–" : `${fmt(hw.gpu_temp)} °C`;
   $("temp-bar").style.width = hw.gpu_temp == null ? "0%" : `${Math.min(100, hw.gpu_temp)}%`;
+  if (worker) {
+    // The coordinator owns GPU0; its expert cache is in the engine snapshot. The RPC stats object carries
+    // the worker's expert cache, while the GPU rows carry each device's VRAM and temperature.
+    const gpu0 = (hw.gpus || []).find((g) => g.source !== "rpc-worker" && Number(g.index) === 0) || {};
+    const workerHardware = eng.rpc_stage && eng.rpc_stage.worker && eng.rpc_stage.worker.hardware || {};
+    const rows = [
+      {index: 0, gpu: gpu0, slots: eng.expert_slots, cacheMiB: eng.expert_cache_mib,
+       ramUsed: hw.ram_used, ramTotal: hw.ram_total, temp: gpu0.temp, label: "NODE #0", ramLabel: "NODE #0"},
+      {index: 1, gpu: worker, slots: workerHardware.expert_slots, cacheMiB: workerHardware.expert_cache_mib,
+       ramUsed: worker.ram_used, ramTotal: worker.ram_total, temp: worker.temp, label: "NODE #1", ramLabel: "NODE #1"},
+    ];
+    for (const key of ["slots", "ram", "temp"]) {
+      $(`${key}-single`).hidden = true;
+      $(`${key}-rpc`).hidden = false;
+    }
+    const width = (pct) => pct == null || !Number.isFinite(pct) ? "0%" : `${Math.max(0, Math.min(100, pct))}%`;
+    for (const row of rows) {
+      const suffix = `gpu${row.index}`;
+      $(`slots-${suffix}-label`).textContent = row.label;
+      $(`ram-${suffix}-label`).textContent = row.ramLabel;
+      $(`temp-${suffix}-label`).textContent = row.label;
+
+      const cacheBytes = row.cacheMiB == null ? null : Number(row.cacheMiB) * 1048576;
+      const totalVram = row.gpu.mem_total;
+      const expertParts = [];
+      if (row.slots != null) expertParts.push(fmt(row.slots));
+      if (cacheBytes != null) expertParts.push(`${gb(cacheBytes)} GB`);
+      $(`slots-${suffix}-text`).textContent = expertParts.length ? expertParts.join(" · ") : "–";
+      $(`slots-${suffix}-bar`).style.width = width(cacheBytes != null && totalVram ? 100 * cacheBytes / totalVram : null);
+
+      const hasRam = row.ramUsed != null && row.ramTotal != null && row.ramTotal > 0;
+      const ramPct = hasRam ? 100 * row.ramUsed / row.ramTotal : null;
+      $(`ram-${suffix}-text`).textContent = hasRam ? `${gb(row.ramUsed)} / ${gb(row.ramTotal, 0)} GB` : "–";
+      $(`ram-${suffix}-bar`).style.width = width(ramPct);
+      const ramProgress = $(`ram-${suffix}-bar`).parentElement;
+      if (ramPct > 92) ramProgress.dataset.tone = "danger"; else delete ramProgress.dataset.tone;
+
+      $(`temp-${suffix}-text`).textContent = row.temp == null ? "–" : `${fmt(row.temp)} °C`;
+      $(`temp-${suffix}-bar`).style.width = width(row.temp == null ? null : row.temp);
+    }
+  } else {
+    for (const key of ["slots", "ram", "temp"]) {
+      $(`${key}-single`).hidden = false;
+      $(`${key}-rpc`).hidden = true;
+    }
+  }
 
   // recent requests
   const body = $("req-body");
