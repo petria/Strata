@@ -7,7 +7,7 @@ if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
   echo "Commit or remove local changes before deployment." >&2
   exit 2
 fi
-cmake --build "$ROOT/build-v0210-sm86-rdma" --target strata --parallel 8
+cmake --build "$ROOT/build-v0211-sm86-rdma" --target strata --parallel 8
 REV=$(git -C "$ROOT" rev-parse HEAD)
 REMOTE_BASE=/home/operator/.local/share/strata-rpc
 RELEASE="$REMOTE_BASE/releases/$REV"
@@ -19,7 +19,7 @@ ssh "$REMOTE" bash -s -- "$RELEASE" "$REMOTE_BASE" <<'REMOTE_SCRIPT'
 set -euo pipefail
 release=$1
 base=$2
-build="$release/build-v0210-sm120-rdma"
+build="$release/build-v0211-sm120-rdma"
 vision_build="$release/build-vision"
 
 cmake -S "$release" -B "$build" -G Ninja \
