@@ -67,7 +67,8 @@ if [[ ! -x "$base/python-env/bin/python" ]]; then
   "$base/python-env/bin/python" -m pip install -r "$release/requirements.txt"
 fi
 
-mkdir -p "$HOME/.config/systemd/user" "$base/backups"
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211" "$base/backups"
+touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211/coordinator.log"
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 unit="$HOME/.config/systemd/user/strata-swift-iq3s-rpc-coordinator.service"
 if [[ -f "$unit" ]]; then cp -a "$unit" "$base/backups/coordinator.service.$stamp"; fi
@@ -80,6 +81,8 @@ mv -Tf "$base/current.next" "$base/current"
 systemctl --user daemon-reload
 REMOTE_SCRIPT
 
+mkdir -p "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211"
+touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211/worker.log"
 install -D -m 644 "$ROOT/packaging/rpc/systemd/strata-swift-iq3s-rpc-worker.service" \
   "$HOME/.config/systemd/user/strata-swift-iq3s-rpc-worker.service"
 systemctl --user daemon-reload
@@ -113,13 +116,25 @@ PY
 ssh "$REMOTE" systemctl --user restart codex-llama-proxy.service
 python3 - <<'PY'
 import json
+import time
 import urllib.request
 
-with urllib.request.urlopen("http://192.0.2.10:8081/health", timeout=5) as response:
-    health = json.load(response)
-if health.get("status") != "ok" or not health.get("loaded"):
-    raise SystemExit(f"Codex proxy did not reach the Strata coordinator: {health}")
-print("Codex proxy health:", json.dumps(health, sort_keys=True))
+url = "http://192.0.2.10:8081/v1/models"
+deadline = time.monotonic() + 60
+last_error = None
+while time.monotonic() < deadline:
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            payload = json.load(response)
+        if payload.get("data"):
+            print("Codex proxy models:", json.dumps(payload, sort_keys=True))
+            break
+        last_error = f"no models returned: {payload}"
+    except Exception as exc:
+        last_error = str(exc)
+    time.sleep(2)
+else:
+    raise SystemExit(f"Codex proxy did not reach the Strata coordinator: {last_error}")
 PY
 
 ssh "$REMOTE" systemctl --user is-active --quiet strata-swift-iq3s-rpc-coordinator.service
