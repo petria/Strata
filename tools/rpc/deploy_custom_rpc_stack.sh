@@ -67,6 +67,18 @@ touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0212/worker.log"
 install -D -m 644 "$ROOT/packaging/rpc/systemd/strata-swift-iq3s-rpc-worker.service" "$HOME/.config/systemd/user/strata-swift-iq3s-rpc-worker.service"
 systemctl --user daemon-reload
 systemctl --user start strata-swift-iq3s-rpc-worker.service
+# Inspect the local listening socket without connecting: the worker accepts its one authenticated peer.
+python3 - <<'WORKER_READY'
+import subprocess,time
+end=time.monotonic()+300
+while time.monotonic()<end:
+    status=subprocess.run(['systemctl','--user','is-active','--quiet','strata-swift-iq3s-rpc-worker.service'])
+    listening=subprocess.check_output(['ss','-H','-ltn','sport = :50056'],text=True)
+    if status.returncode==0 and listening.strip():
+        print('Worker listener ready: 192.0.2.20:50056');break
+    time.sleep(1)
+else: raise SystemExit('Worker listener did not become ready; coordinator was not started.')
+WORKER_READY
 ssh "$REMOTE" systemctl --user start strata-swift-iq3s-rpc-coordinator.service
 python3 - <<'READY'
 import json,time,urllib.request
