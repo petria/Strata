@@ -50,7 +50,19 @@
     "12",
     "--serve",
     "--resident-budget-gib",
-    "64"
+    "64",
+    "--native-dense-gguf",
+    "/srv/coordinator-storage/llm_stuff/strata-2.0-baseline-data/models/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf",
+    "--native-dense-gguf",
+    "/srv/coordinator-storage/llm_stuff/strata-2.0-baseline-data/models/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00002-of-00006.gguf",
+    "--native-dense-gguf",
+    "$MODEL_DATA_ROOT/models/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00003-of-00006.gguf",
+    "--native-dense-gguf",
+    "/srv/coordinator-storage/llm_stuff/strata-2.0-baseline-data/models/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00004-of-00006.gguf",
+    "--native-dense-gguf",
+    "/srv/coordinator-storage/llm_stuff/strata-2.0-baseline-data/models/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00005-of-00006.gguf",
+    "--native-dense-gguf",
+    "/srv/coordinator-storage/llm_stuff/strata-2.0-baseline-data/models/unsloth-Q8_0/Qwen3.8-Flash-Next-Q8_0-00006-of-00006.gguf"
   ],
   "cwd": "$STRATA_ROOT",
   "env": {
