@@ -20,6 +20,32 @@ inline bool worker_gpu_monitor_enabled() {
     return value != nullptr && value[0] == '1' && value[1] == '\0';
 }
 
+#if !defined(_WIN32)
+// Keep NVML loaded for the worker lifetime. Repeated dlopen/init/shutdown/dlclose
+// leaks an NVIDIA eventfd per sample on the installed Linux driver.
+struct WorkerNvmlLibrary {
+    void* handle = nullptr;
+    bool ready = false;
+    WorkerNvmlLibrary() {
+        handle = dlopen("libnvidia-ml.so.1", RTLD_LAZY | RTLD_LOCAL);
+        if (!handle) handle = dlopen("libnvidia-ml.so", RTLD_LAZY | RTLD_LOCAL);
+        if (handle) {
+            auto init = reinterpret_cast<int (*)()>(dlsym(handle, "nvmlInit_v2"));
+            ready = init && init() == 0;
+        }
+    }
+    ~WorkerNvmlLibrary() {
+        if (ready) {
+            auto shutdown = reinterpret_cast<int (*)()>(dlsym(handle, "nvmlShutdown"));
+            if (shutdown) shutdown();
+        }
+        if (handle) dlclose(handle);
+    }
+    WorkerNvmlLibrary(const WorkerNvmlLibrary&) = delete;
+    WorkerNvmlLibrary& operator=(const WorkerNvmlLibrary&) = delete;
+};
+#endif
+
 inline std::string worker_gpu_monitor_json() {
     int device = 0;
     cudaDeviceProp prop{};
@@ -43,10 +69,9 @@ inline std::string worker_gpu_monitor_json() {
     double pcie_rx = -1.0, pcie_tx = -1.0;
     int pcie_gen = -1, pcie_gen_max = -1, pcie_width = -1;
 #if !defined(_WIN32)
-    void* lib = dlopen("libnvidia-ml.so.1", RTLD_LAZY | RTLD_LOCAL);
-    if (!lib) lib = dlopen("libnvidia-ml.so", RTLD_LAZY | RTLD_LOCAL);
-    if (lib) {
-        using Init = int (*)();
+    static WorkerNvmlLibrary nvml;
+    void* lib = nvml.handle;
+    if (nvml.ready) {
         using HandleByPci = int (*)(const char*, void**);
         using Uint = int (*)(void*, unsigned int*);
         using Temperature = int (*)(void*, unsigned int, unsigned int*);
@@ -56,9 +81,8 @@ inline std::string worker_gpu_monitor_json() {
         using PowerLimit = int (*)(void*, unsigned int*);
         struct Utilization { unsigned int gpu, memory; } u{};
         struct Memory { unsigned long long total, free, used; } m{};
-        auto init = reinterpret_cast<Init>(dlsym(lib, "nvmlInit_v2"));
         auto by_pci = reinterpret_cast<HandleByPci>(dlsym(lib, "nvmlDeviceGetHandleByPciBusId_v2"));
-        if (init && by_pci && init() == 0) {
+        if (by_pci) {
             void* dev = nullptr;
             char pci_bus_id[32] = {};
             if (have_device && cudaDeviceGetPCIBusId(pci_bus_id, sizeof pci_bus_id, device) == cudaSuccess &&
@@ -90,10 +114,7 @@ inline std::string worker_gpu_monitor_json() {
                 get_link = reinterpret_cast<Uint>(dlsym(lib, "nvmlDeviceGetCurrPcieLinkWidth"));
                 if (get_link && get_link(dev, &v) == 0) pcie_width = static_cast<int>(v);
             }
-            auto shutdown = reinterpret_cast<Init>(dlsym(lib, "nvmlShutdown"));
-            if (shutdown) shutdown();
         }
-        dlclose(lib);
     }
 #endif
 
