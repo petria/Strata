@@ -93,7 +93,10 @@ main { flex: 1; min-height: 0; display: flex; }
 .state-card__row { display: flex; justify-content: space-between; gap: var(--st-s-4); font-size: var(--st-fs-sm);
                    font-weight: var(--st-fw-medium); font-variant-numeric: tabular-nums; }
 .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--st-s-4); }
-.metric-card { padding: var(--st-s-4) var(--st-s-5); }
+.metric-card { padding: var(--st-s-4) var(--st-s-5); display: flex; flex-direction: column; }
+/* Stretch the content to the grid row height, keeping every graph at the same bottom inset. */
+.metric-card > .st-metric { flex: 1; }
+.metric-card .st-metric__spark { margin-top: auto; flex-shrink: 0; }
 .rpc-gpus-card[hidden] { display: none; }
 .rpc-gpu-identities { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
                       align-items: start; gap: var(--st-s-3) var(--st-s-5); overflow-wrap: anywhere; }
