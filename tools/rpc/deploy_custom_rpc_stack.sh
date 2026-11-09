@@ -141,3 +141,8 @@ ssh "$REMOTE" systemctl --user is-active --quiet strata-swift-iq3s-rpc-coordinat
 ssh "$REMOTE" systemctl --user is-active --quiet codex-llama-proxy.service
 systemctl --user is-active --quiet strata-swift-iq3s-rpc-worker.service
 echo "Deployed Strata RPC runtime $REV to $REMOTE and restarted both services."
+
+# Preserve the optional independent Monitor sampler on runtime bundle upgrades.
+if systemctl --user is-enabled --quiet strata-live-monitor-worker.service; then
+  "$ROOT/tools/rpc/deploy_live_monitor.sh" "$REMOTE"
+fi

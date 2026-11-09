@@ -133,6 +133,7 @@ const METRICS = [
   {key: "temp", label: "GPU temp", icon: "thermometer", unit: "°C", series: "gpu_temp", tone: "warn"},
   {key: "power", label: "Power", icon: "bolt", unit: "W", series: "gpu_power"},
   {key: "pcie", label: "PCIe", icon: "link", unit: "", series: "gpu_pcie_rx_mb", tone: "info"},
+  {key: "network", label: "Network NODE #0", icon: "link", tone: "info"},
   {key: "cpu", label: "CPU", icon: "cpu", unit: "%", series: "cpu", max: 100, split: true},
   {key: "disk", label: "Disk read", icon: "disk", unit: "MB/s", series: "disk_read_mb", tone: "info", split: true},
 ];
@@ -150,6 +151,9 @@ $("metrics").innerHTML = `
     ${m.key === "speed" ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-speed">-</span><span class="st-metric__sub" id="ms-speed">Decode</span></div>
       <div class="speed-prefill"><span class="st-metric__value" id="mv-prefill">-</span><span class="st-metric__sub" id="ms-prefill">Prefill</span></div>
+    </div>` : m.key === "network" ? `<div class="speed-values">
+      <div><span class="st-metric__value" id="mv-network">–</span><span class="st-metric__sub" id="ms-network">read</span></div>
+      <div class="speed-prefill"><span class="st-metric__value" id="mv-network-up">–</span><span class="st-metric__sub" id="ms-network-up">write</span></div>
     </div>` : m.split ? `<div class="speed-values">
       <div><span class="st-metric__value" id="mv-${m.key}">–</span><span class="st-metric__sub" id="ms-${m.key}"></span></div>
       <div class="speed-prefill" id="mw-${m.key}" hidden><span class="st-metric__value" id="mv-${m.key}-worker">–</span>
@@ -160,6 +164,9 @@ $("metrics").innerHTML = `
       <path class="area" fill="currentColor" opacity=".12"/><path class="line" fill="none" stroke="currentColor"
       stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
       ${m.key === "speed" || m.split ? `<g id="sp-${right}" class="speed-prefill">
+        <path class="area" fill="currentColor" opacity=".12"/>
+        <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
+        stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}${m.key === "network" ? `<g id="sp-network-up" class="speed-prefill">
         <path class="area" fill="currentColor" opacity=".12"/>
         <path class="line" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"
         stroke-linecap="round" vector-effect="non-scaling-stroke"/></g>` : ""}</svg>
@@ -226,6 +233,19 @@ function setMetric(key, value, unit, sub) {
 
 let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let metricsEpoch = 0;
+let liveWorkerOverlay = null, liveWorkerRequested = false;
+function updateLiveWorker(m) {
+  if (!(m.hardware?.gpus || []).some(g => g.source === "rpc-worker")) return;
+  if (!liveWorkerRequested) {
+    liveWorkerRequested = true;
+    import("./rpc-live-config.js").then(async ({default: config}) => {
+      if (!config.url) return;
+      const module = await import("./rpc-live-monitor.js");
+      liveWorkerOverlay = module.startLiveWorker(config.url);
+    }).catch(() => {}); // An unconfigured/single-host install keeps the normal monitor.
+  }
+  if (liveWorkerOverlay) liveWorkerOverlay(m);
+}
 // After Load or Unload returns, a poll that started earlier can still say the opposite. Hold the POST's state until a later
 // poll agrees, or until the first poll that started after the POST arrives. (PR #3550 by sakuumomo)
 let metricsHold = null;
@@ -249,6 +269,7 @@ async function poll() {
         return;
       }
       if (metricsHold && (metricsAgree(m.live, metricsHold.state) || epoch > metricsHold.after)) metricsHold = null;
+      updateLiveWorker(m);
       lastMetrics = m;
       metricsFailures = 0;
       render(lastMetrics);
@@ -397,7 +418,19 @@ $("unload-btn").onclick = async () => {
   }
 };
 
+// Keep the dashboard DOM stable while someone selects/copies its live values.
+// Polling still records the latest metrics; the next poll paints them after deselection.
+function dashboardTextSelected() {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || !selection.rangeCount) return false;
+  return ["view-monitor", "view-about"].some((id) => {
+    const view = $(id);
+    return view && (view.contains(selection.anchorNode) || view.contains(selection.focusNode));
+  });
+}
+
 function render(m) {
+  if (dashboardTextSelected()) return;
   const live = m.live || {}, hw = m.hardware || {}, st = m.hardware_static || {}, eng = m.engine || {}, h = m.history || {};
   const last = (m.requests || [])[0];
   // the header pill. modelOp and a local load win over "N queued": with parallel requests, queued stays up through
@@ -534,6 +567,12 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
                 : avgPrefill != null ? avgPrefill : last && last.prompt_ms > 0 ? Math.max(0, last.prompt_tokens - (last.reused || 0)) / (last.prompt_ms / 1000) : null;
   setMetric("prefill", prefill == null ? null : fmt(prefill), "t/s",
             live.state === "reading" ? "Prefill now" : live.state === "generating" ? "Prefill this request" : avgPrefill != null ? "Prefill · run average" : last ? "Prefill last request" : "Prefill");
+  const network = hw.network || {};
+  setMetric("network", network.down_kib_s == null ? null : fmt(network.down_kib_s / 1024, 1), "MB/s", "read");
+  setMetric("network-up", network.up_kib_s == null ? null : fmt(network.up_kib_s / 1024, 1), "MB/s", "write");
+  const networkMax = Math.max(1, ...(h.network_down || []).filter(v => v != null), ...(h.network_up || []).filter(v => v != null));
+  spark("sp-network", h.network_down, networkMax);
+  spark("sp-network-up", h.network_up, networkMax);
   spark("sp-speed", h.tok_s);
   spark("sp-prefill", h.prefill_tok_s_mean);
   // a model split across several cards (issue #112): the cards show their total / mean / hottest, and each card's own
@@ -565,8 +604,7 @@ function renderMonitor(live, hw, st, eng, h, last, requests, totals, kept) {
   spark("sp-pcie", h.gpu_pcie_rx_mb);
   // The worker's host readings (serve/rpc_monitor.py puts them on its row): this machine on the left, the
   // RPC worker on the right, like the Speed card. The row carries the worker's own sample time, and the
-  // reading arrives with the request's baseline and end rather than on a timer - so an idle stack says how
-  // old the number is.
+  // optional live sidecar refreshes readings independently; without it, request-boundary snapshots remain available.
   const worker = (hw.gpus || []).find((g) => g.source === "rpc-worker") || null;
   const coreSub = (cores, threads) => (threads ? `${cores ? `${cores} cores · ` : ""}${threads} threads` : "");
   $("mw-cpu").hidden = !worker;
@@ -749,6 +787,7 @@ async function loadMcp() {
 const MCP_STATE = {ready: ["st-badge--generating", "Connected"], starting: ["st-badge--reading", "Starting"],
                    failed: ["st-badge--error", "Failed"], stopped: ["st-badge--queued", "Stopped"], idle: ["", "Waiting"]};
 function renderMcp() {
+  if (dashboardTextSelected()) return;
   const servers = mcpInfo.servers || [];
   $("mcp-card").hidden = !servers.length;
   $("mcp-row").hidden = !servers.length;
