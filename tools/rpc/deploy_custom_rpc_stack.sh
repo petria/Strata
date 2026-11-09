@@ -1,148 +1,97 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 REMOTE=${1:-coordinator.example}
+MODE=${2:-deploy}
+case "$MODE" in prepare|activate|deploy) ;; *) echo 'Usage: deploy_custom_rpc_stack.sh [host] [prepare|activate|deploy]' >&2; exit 2;; esac
 ROOT=$(git rev-parse --show-toplevel)
 if [[ -n "$(git -C "$ROOT" status --porcelain)" ]]; then
-  echo "Commit or remove local changes before deployment." >&2
-  exit 2
+  echo 'Commit or remove local changes before deployment.' >&2; exit 2
 fi
-cmake --build "$ROOT/build-v0211-sm86-rdma" --target strata --parallel 8
 REV=$(git -C "$ROOT" rev-parse HEAD)
 REMOTE_BASE=/home/operator/.local/share/strata-rpc
 RELEASE="$REMOTE_BASE/releases/$REV"
-
-git -C "$ROOT" archive --format=tar "$REV" | \
-  ssh "$REMOTE" "mkdir -p '$RELEASE' && tar -xf - -C '$RELEASE'"
-
-ssh "$REMOTE" bash -s -- "$RELEASE" "$REMOTE_BASE" <<'REMOTE_SCRIPT'
+if [[ "$MODE" != activate ]]; then
+  cmake -S "$ROOT" -B "$ROOT/build-v0212-sm86-rdma" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc \
+    -DCMAKE_CUDA_ARCHITECTURES=86 -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_STAGE_RPC=ON \
+    -DSTRATA_ENABLE_RPC_RDMA=ON -DSTRATA_MMQ_KQUANTS=ON -DSTRATA_MMQ_TQ_OVERLAY=ON \
+    -DSTRATA_NATIVE_EXPERTS=ON -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_PORTABLE=OFF \
+    -DSTRATA_PLE_FIXTURE_DIR="$ROOT/bench/micro"
+  cmake --build "$ROOT/build-v0212-sm86-rdma" --target strata --parallel 6
+  git -C "$ROOT" archive --format=tar "$REV" | ssh "$REMOTE" "mkdir -p '$RELEASE' && tar -xf - -C '$RELEASE'"
+  ssh "$REMOTE" bash -s -- "$RELEASE" "$REMOTE_BASE" <<'BUILD'
 set -euo pipefail
-release=$1
-base=$2
-build="$release/build-v0211-sm120-rdma"
-vision_build="$release/build-vision"
-
-cmake -S "$release" -B "$build" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc \
-  -DCMAKE_CUDA_ARCHITECTURES=120 \
-  -DSTRATA_ENABLE_CUDA=ON \
-  -DSTRATA_ENABLE_STAGE_RPC=ON \
-  -DSTRATA_ENABLE_RPC_RDMA=ON \
-  -DSTRATA_MMQ_KQUANTS=ON \
-  -DSTRATA_MMQ_TQ_OVERLAY=ON \
-  -DSTRATA_NATIVE_EXPERTS=ON \
-  -DSTRATA_Q6K_EXPERTS=ON \
-  -DSTRATA_PORTABLE=OFF \
-  -DSTRATA_PLE_FIXTURE_DIR="$release/bench/micro"
-cmake --build "$build" --target strata --parallel 12
-
-cmake -S "$release/tools/vision" -B "$vision_build" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DLLAMA_DIR="$build/_deps/strata_llamacpp-src" \
-  -DSTRATA_VISION_CUDA=OFF \
-  -DSTRATA_PORTABLE=OFF
-cmake --build "$vision_build" --target strata-vision --parallel 12
+release=$1; base=$2; build="$release/build-v0212-sm120-rdma"; vision_build="$release/build-vision"
+cmake -S "$release" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_COMPILER=/usr/local/cuda-13.3/bin/nvcc -DCMAKE_CUDA_ARCHITECTURES=120 \
+  -DSTRATA_ENABLE_CUDA=ON -DSTRATA_ENABLE_STAGE_RPC=ON -DSTRATA_ENABLE_RPC_RDMA=ON \
+  -DSTRATA_MMQ_KQUANTS=ON -DSTRATA_MMQ_TQ_OVERLAY=ON -DSTRATA_NATIVE_EXPERTS=ON \
+  -DSTRATA_Q6K_EXPERTS=ON -DSTRATA_PORTABLE=OFF -DSTRATA_PLE_FIXTURE_DIR="$release/bench/micro"
+cmake --build "$build" --target strata --parallel 6
+cmake -S "$release/tools/vision" -B "$vision_build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DLLAMA_DIR="$build/_deps/strata_llamacpp-src" -DSTRATA_VISION_CUDA=OFF -DSTRATA_PORTABLE=OFF
+cmake --build "$vision_build" --target strata-vision --parallel 6
 install -D -m 755 "$vision_build/bin/strata-vision" "$release/engine/strata-vision"
-test -x "$build/strata"
-test -f "$release/data/expert-profile.bin"
-
-# FetchContent keeps Git metadata for its source checkout. Runtime bundles only
-# need the fetched source and built artifacts, not a nested repository.
-python3 - "$release" <<'CLEAN_GIT_METADATA'
+test -x "$build/strata"; test -f "$release/data/expert-profile.bin"
+python3 - "$release" <<'CLEAN'
 from pathlib import Path
-import shutil
-import sys
-
-root = Path(sys.argv[1])
-for metadata in root.rglob(".git"):
-    if metadata.is_dir():
-        shutil.rmtree(metadata)
-    else:
-        metadata.unlink()
-CLEAN_GIT_METADATA
-
-if [[ ! -x "$base/python-env/bin/python" ]]; then
-  python3 -m venv "$base/python-env"
-  "$base/python-env/bin/python" -m pip install -r "$release/requirements.txt"
+import shutil,sys
+for p in Path(sys.argv[1]).rglob('.git'):
+    if p.is_dir(): shutil.rmtree(p)
+    else: p.unlink()
+CLEAN
+if [[ ! -x "$base/python-env/bin/python" ]]; then python3 -m venv "$base/python-env"; fi
+"$base/python-env/bin/python" -m pip install -r "$release/requirements.txt"
+BUILD
 fi
-
-mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211" "$base/backups"
-touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211/coordinator.log"
-stamp=$(date -u +%Y%m%dT%H%M%SZ)
-unit="$HOME/.config/systemd/user/strata-swift-iq3s-rpc-coordinator.service"
-if [[ -f "$unit" ]]; then cp -a "$unit" "$base/backups/coordinator.service.$stamp"; fi
-cp "$release/packaging/rpc/systemd/strata-swift-iq3s-rpc-coordinator.service" "$unit"
-proxy_unit="$HOME/.config/systemd/user/codex-llama-proxy.service"
-if [[ -f "$proxy_unit" ]]; then cp -a "$proxy_unit" "$base/backups/codex-llama-proxy.service.$stamp"; fi
-cp "$release/packaging/rpc/systemd/codex-llama-proxy.service" "$proxy_unit"
-ln -sfn "$release" "$base/current.next"
-mv -Tf "$base/current.next" "$base/current"
+if [[ "$MODE" == prepare ]]; then echo "Prepared $REV at $RELEASE (no inference services restarted)."; exit 0; fi
+# Validate both binaries before touching the active stack.
+test -x "$ROOT/build-v0212-sm86-rdma/strata"
+ssh "$REMOTE" test -x "$RELEASE/build-v0212-sm120-rdma/strata"
+ssh "$REMOTE" systemctl --user stop codex-llama-proxy.service strata-swift-iq3s-rpc-coordinator.service
+systemctl --user stop strata-swift-iq3s-rpc-worker.service
+ssh "$REMOTE" bash -s -- "$RELEASE" "$REMOTE_BASE" <<'ACTIVATE'
+set -euo pipefail
+release=$1; base=$2; stamp=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0212" "$base/backups"
+touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0212/coordinator.log"
+for unit in strata-swift-iq3s-rpc-coordinator.service codex-llama-proxy.service; do
+  if [[ -f "$HOME/.config/systemd/user/$unit" ]]; then cp -a "$HOME/.config/systemd/user/$unit" "$base/backups/$unit.$stamp"; fi
+  cp "$release/packaging/rpc/systemd/$unit" "$HOME/.config/systemd/user/$unit"
+done
+ln -sfn "$release" "$base/current.next"; mv -Tf "$base/current.next" "$base/current"
 systemctl --user daemon-reload
-REMOTE_SCRIPT
-
-mkdir -p "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211"
-touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0211/worker.log"
-install -D -m 644 "$ROOT/packaging/rpc/systemd/strata-swift-iq3s-rpc-worker.service" \
-  "$HOME/.config/systemd/user/strata-swift-iq3s-rpc-worker.service"
+ACTIVATE
+mkdir -p "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0212"
+touch "$HOME/.local/state/strata-stage-rpc/swift-iq3s-v0212/worker.log"
+install -D -m 644 "$ROOT/packaging/rpc/systemd/strata-swift-iq3s-rpc-worker.service" "$HOME/.config/systemd/user/strata-swift-iq3s-rpc-worker.service"
 systemctl --user daemon-reload
-
-ssh "$REMOTE" systemctl --user stop strata-swift-iq3s-rpc-coordinator.service
-systemctl --user restart strata-swift-iq3s-rpc-worker.service
-ssh "$REMOTE" systemctl --user restart strata-swift-iq3s-rpc-coordinator.service
-
-python3 - <<'PY'
-import json
-import time
-import urllib.request
-
-deadline = time.monotonic() + 180
-last_error = None
-while time.monotonic() < deadline:
+systemctl --user start strata-swift-iq3s-rpc-worker.service
+ssh "$REMOTE" systemctl --user start strata-swift-iq3s-rpc-coordinator.service
+python3 - <<'READY'
+import json,time,urllib.request
+end=time.monotonic()+300
+while time.monotonic()<end:
     try:
-        with urllib.request.urlopen("http://192.0.2.10:8080/health", timeout=5) as response:
-            health = json.load(response)
-        if health.get("status") == "ok" and health.get("loaded"):
-            print("Coordinator health:", json.dumps(health, sort_keys=True))
-            break
-        last_error = f"not ready: {health}"
-    except Exception as exc:
-        last_error = str(exc)
+        h=json.load(urllib.request.urlopen('http://192.0.2.10:8080/health',timeout=5))
+        if h.get('status')=='ok' and h.get('loaded'): print('Coordinator ready:',h);break
+    except Exception: pass
     time.sleep(3)
-else:
-    raise SystemExit(f"Coordinator health did not recover: {last_error}")
-PY
-
-ssh "$REMOTE" systemctl --user restart codex-llama-proxy.service
-python3 - <<'PY'
-import json
-import time
-import urllib.request
-
-url = "http://192.0.2.10:8081/v1/models"
-deadline = time.monotonic() + 60
-last_error = None
-while time.monotonic() < deadline:
+else: raise SystemExit('Coordinator did not become ready; restore the saved paired runtime.')
+READY
+ssh "$REMOTE" systemctl --user start codex-llama-proxy.service
+python3 - <<'READY'
+import json,time,urllib.request
+end=time.monotonic()+60
+while time.monotonic()<end:
     try:
-        with urllib.request.urlopen(url, timeout=5) as response:
-            payload = json.load(response)
-        if payload.get("data"):
-            print("Codex proxy models:", json.dumps(payload, sort_keys=True))
-            break
-        last_error = f"no models returned: {payload}"
-    except Exception as exc:
-        last_error = str(exc)
+        m=json.load(urllib.request.urlopen('http://192.0.2.10:8081/v1/models',timeout=5))
+        if m.get('data'): print('Proxy ready:',m['data'][0]['id']);break
+    except Exception: pass
     time.sleep(2)
-else:
-    raise SystemExit(f"Codex proxy did not reach the Strata coordinator: {last_error}")
-PY
-
-ssh "$REMOTE" systemctl --user is-active --quiet strata-swift-iq3s-rpc-coordinator.service
-ssh "$REMOTE" systemctl --user is-active --quiet codex-llama-proxy.service
+else: raise SystemExit('Proxy did not become ready.')
+READY
+if systemctl --user is-enabled --quiet strata-live-monitor-worker.service; then "$ROOT/tools/rpc/deploy_live_monitor.sh" "$REMOTE"; fi
 systemctl --user is-active --quiet strata-swift-iq3s-rpc-worker.service
-echo "Deployed Strata RPC runtime $REV to $REMOTE and restarted both services."
-
-# Preserve the optional independent Monitor sampler on runtime bundle upgrades.
-if systemctl --user is-enabled --quiet strata-live-monitor-worker.service; then
-  "$ROOT/tools/rpc/deploy_live_monitor.sh" "$REMOTE"
-fi
+ssh "$REMOTE" systemctl --user is-active --quiet strata-swift-iq3s-rpc-coordinator.service codex-llama-proxy.service
+echo "Activated Strata v0.2.12 RPC runtime $REV"
