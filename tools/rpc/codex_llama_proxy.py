@@ -2084,7 +2084,7 @@ def reset_stats(stats_file: str) -> None:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--listen", default="127.0.0.1:8081", help="proxy listen address")
-    parser.add_argument("--upstream", default="http://192.0.2.30:8080", help="llama-server URL")
+    parser.add_argument("--upstream", default=os.environ.get("STRATA_RPC_COORDINATOR_URL", "http://127.0.0.1:8080"), help="llama-server URL")
     parser.add_argument("--connect-timeout", type=float, default=10.0)
     parser.add_argument("--read-timeout", type=float, default=900.0)
     parser.add_argument("--max-body-mib", type=int, default=32)

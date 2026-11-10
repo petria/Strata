@@ -1,5 +1,5 @@
 {
-  "exe": "$STRATA_ROOT/build-v0212-sm86-rdma/strata",
+  "exe": "$RPC_ENGINE",
   "args": [
     "--pack",
     "$MODEL_DATA_ROOT/packs/swift-iq3_s",
@@ -40,9 +40,9 @@
     "--ple-io",
     "ram",
     "--rpc-listen",
-    "192.0.2.20:50056",
+    "$RPC_STAGE_ADDRESS",
     "--rpc-allow-peer",
-    "192.0.2.10",
+    "$RPC_ALLOWED_PEER",
     "--rpc-cert",
     "$TLS_DIR/strata-stage-worker.crt",
     "--rpc-key",

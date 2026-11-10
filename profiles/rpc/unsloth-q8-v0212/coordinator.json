@@ -1,5 +1,5 @@
 {
-  "exe": "$STRATA_ROOT/build-v0212-sm120-rdma/strata",
+  "exe": "$RPC_ENGINE",
   "args": [
     "--pack",
     "$MODEL_DATA_ROOT/packs/unsloth-q8_0",
@@ -36,7 +36,7 @@
     "--conversation-cache-slots",
     "4",
     "--rpc-stage",
-    "192.0.2.20:50056",
+    "$RPC_STAGE_ADDRESS",
     "--rpc-cert",
     "$TLS_DIR/strata-stage-coordinator.crt",
     "--rpc-key",
@@ -54,8 +54,8 @@
   "model_name": "qwen3.8-flash-next-unsloth-q8_0-v0.2.12-rpc",
   "log": "$STATE_DIR/engine.log",
   "lib_dirs": [
-    "/usr/local/cuda-13.3/bin",
-    "/usr/local/cuda-13.3/lib64"
+    "$RPC_CUDA_BIN",
+    "$RPC_CUDA_LIB"
   ],
   "port": 8080,
   "gpu": 0,

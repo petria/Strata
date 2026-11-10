@@ -14,8 +14,6 @@ import sys
 def _expand(value):
     if isinstance(value, str):
         expanded = string.Template(value).substitute(os.environ)
-        if "$" in expanded:
-            raise ValueError(f"unexpanded variable in RPC profile value: {value}")
         return expanded
     if isinstance(value, list):
         return [_expand(item) for item in value]
@@ -69,10 +67,13 @@ def main() -> None:
     args = parser.parse_args()
     if not os.environ.get("STRATA_ROOT"):
         parser.error("STRATA_ROOT must name the source checkout or deployed runtime bundle")
-    if args.role == "worker":
-        run_worker(args.config)
-    else:
-        run_coordinator(args.config, args.state_dir, args.host, args.port)
+    try:
+        if args.role == "worker":
+            run_worker(args.config)
+        else:
+            run_coordinator(args.config, args.state_dir, args.host, args.port)
+    except KeyError as error:
+        parser.error("Missing RPC profile environment variable: " + str(error.args[0]))
 
 
 if __name__ == "__main__":

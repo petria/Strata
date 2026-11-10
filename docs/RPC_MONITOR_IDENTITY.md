@@ -13,7 +13,7 @@ the optional CPU identity module on that worker instead:
 
 ```sh
 python3 tools/rpc/write_monitor_identity.py \
-  --coordinator-host coordinator.example --output /tmp/rpc-stack-identity.js
+  --coordinator-host $STRATA_RPC_REMOTE --output /tmp/rpc-stack-identity.js
 ```
 
 Copy the output to `serve/web/rpc-stack-identity.js` in the coordinator checkout.

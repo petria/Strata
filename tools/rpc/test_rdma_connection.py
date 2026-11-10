@@ -20,24 +20,24 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_OUTPUT = Path('/home/operator/AI-tools/bench/strata-rdma-20261026/transport-tests.json')
+DEFAULT_OUTPUT = Path(os.environ.get('RPC_TEST_OUTPUT', 'transport-tests.json'))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--remote', default='operator@192.0.2.10')
-    ap.add_argument('--host-key-alias', default='192.0.2.10', help='Existing known_hosts identity for coordinator.example')
-    ap.add_argument('--local-ip', default='192.0.2.20')
-    ap.add_argument('--peer-ip', default='192.0.2.10')
+    ap.add_argument('--remote', default=os.environ.get('RPC_TEST_REMOTE'))
+    ap.add_argument('--host-key-alias', default=os.environ.get('RPC_TEST_HOST_KEY_ALIAS'), help='Existing known_hosts identity for the remote peer')
+    ap.add_argument('--local-ip', default=os.environ.get('RPC_TEST_LOCAL_IP'))
+    ap.add_argument('--peer-ip', default=os.environ.get('RPC_TEST_PEER_IP'))
     ap.add_argument('--port', type=int, default=50166)
     ap.add_argument('--rdma-port', type=int, default=50168)
-    ap.add_argument('--interface', default='roce0')
+    ap.add_argument('--interface', default=os.environ.get('RPC_TEST_INTERFACE'))
     ap.add_argument('--rdma-depth', type=int, choices=(2, 4, 8, 16), default=2)
     ap.add_argument('--credit-batch', type=int, default=1)
     ap.add_argument('--poll-mode', choices=('event', 'adaptive', 'spin'), default='adaptive')
     ap.add_argument('--spin-us', type=int, default=50)
     ap.add_argument('--binary', type=Path, help='reuse an already compiled transport fixture binary')
-    ap.add_argument('--tls-dir', default='/home/operator/.local/share/strata-stage-rpc/tls')
+    ap.add_argument('--tls-dir', default=os.environ.get('TLS_DIR'))
     ap.add_argument('--timeout', type=int, default=5)
     ap.add_argument('--case-timeout', type=int, default=35)
     ap.add_argument('--large-payloads', action='store_true', help='Also allocate ~512 MiB payloads (several GiB peak per host)')
@@ -48,6 +48,9 @@ def main():
                     help='Repeat immediate server exit after final reply (alternating short/32 MiB payloads)')
     ap.add_argument('--output', type=Path, default=DEFAULT_OUTPUT)
     args = ap.parse_args()
+    for name in ('remote', 'local_ip', 'peer_ip', 'tls_dir', 'interface'):
+        if not getattr(args, name):
+            ap.error('--' + name.replace('_', '-') + ' or its documented environment variable is required')
     if not 1 <= args.timeout <= 3600 or args.case_timeout < args.timeout + 5 or args.close_repetitions < 0:
         ap.error('timeout must be 1..3600 and case-timeout at least timeout+5')
     if not 1 <= args.credit_batch <= args.rdma_depth or not 0 <= args.spin_us <= 1000:

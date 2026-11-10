@@ -1,15 +1,19 @@
+# Template: render with tools/rpc/stack_manage.py render before installation.
 [Unit]
-Description=Strata custom stack Codex Responses compatibility proxy
+Description=Strata RPC proxy
 After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
-ExecStart=/usr/bin/python3 /home/operator/.local/share/strata-rpc/current/tools/rpc/codex_llama_proxy.py --listen 192.0.2.10:8081 --upstream http://192.0.2.10:8080 --stats-file /home/operator/.local/state/codex-llama-proxy/stats.jsonl --debug
-Restart=always
-RestartSec=3
-KillSignal=SIGTERM
-WorkingDirectory=/home/operator/.local/share/strata-rpc/current
+WorkingDirectory=@WORKING_DIRECTORY@
+@ENVIRONMENT@
+ExecStart=@EXEC_START@
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=120
+LimitNOFILE=65536
+StandardOutput=@STDOUT@
+StandardError=@STDERR@
 
 [Install]
 WantedBy=default.target

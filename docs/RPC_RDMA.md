@@ -29,27 +29,11 @@ also tracked in `tools/rpc/codex_llama_proxy.py` and served from that bundle.
 Keep model packs, model weights and TLS private keys in their existing external
 data/state directories.
 
-The profile templates use `STRATA_ROOT`, `MODEL_DATA_ROOT`, `TLS_DIR`, and
-`STATE_DIR` to resolve host paths. The worker service template is in
-[`packaging/rpc/systemd`](../packaging/rpc/systemd). To install the worker unit,
-copy its file to `~/.config/systemd/user/`, run `systemctl --user daemon-reload`,
-then restart `strata-swift-iq3s-rpc-worker.service`. For the coordinator, prepare
-a runtime bundle under `~/.local/share/strata-rpc/current`, install its unit on
-the 5090, and keep the matching Python environment under
-`~/.local/share/strata-rpc/python-env`. The active Swift IQ3_S profile uses a
-CPU vision reader and the committed `data/expert-profile.bin` file. The bundle
-also supplies `codex-llama-proxy.service` on port 8081.
-
-From a clean, committed checkout, run
-`tools/rpc/deploy_custom_rpc_stack.sh [ssh-host]` to archive the current commit,
-build the coordinator engine and CPU vision reader on the 5090, install the
-coordinator and proxy units, switch the runtime symlink, restart the worker,
-coordinator and proxy, and wait for both health checks. Model files and TLS
-credentials are not copied.
-
-Do not remove an older runtime checkout until its engine binary and the Python
-server bundle have been copied to the runtime directory and the new service has
-passed the health and RPC readiness checks.
+Use [RPC_ENVIRONMENT.md](RPC_ENVIRONMENT.md) to export local deployment settings,
+render units, and preflight both nodes. The service files in `packaging/rpc/systemd`
+are templates; render them before installation. The deployment helper builds a
+matched worker/coordinator pair and switches the runtime only after preflight.
+Generated profiles, service settings and TLS credentials stay outside Git.
 
 Build stage RPC with `-DSTRATA_ENABLE_STAGE_RPC=ON`. Native RDMA additionally needs
 `-DSTRATA_ENABLE_RPC_RDMA=ON`, Linux RDMA headers and libraries (`libibverbs` and
@@ -133,26 +117,22 @@ and `rdma_transport.cpp`, with `-DSTRATA_HAS_RPC_RDMA=1`, linking `-lssl -lcrypt
 -libverbs -lrdmacm`. It loads no model or GPU runtime. It copies a temporary binary
 to the remote host and removes its temporary files afterward.
 
-Default test topology:
+Test settings (host-specific values are supplied by environment):
 
 | Setting | Value |
 | --- | --- |
-| Local fixture server / allowed remote client | `192.0.2.20` / `192.0.2.10` |
+| Local fixture server / allowed remote client | `$RPC_TEST_LOCAL_IP` / `$RPC_TEST_PEER_IP` |
 | mTLS bootstrap / RDMA data | `50166` / `50168` |
 | Interface | `roce0` |
-| Remote SSH target | `operator@192.0.2.10` (hostname `coordinator.example`) |
-| Existing SSH host key identity | `192.0.2.10` |
-| TLS directory, both hosts | `/home/operator/.local/share/strata-stage-rpc/tls` |
+| Remote SSH target | `$RPC_TEST_REMOTE` (hostname `$STRATA_RPC_REMOTE`) |
+| Existing SSH host key identity | `$RPC_TEST_HOST_KEY_ALIAS` |
+| TLS directory, both hosts | `$TLS_DIR` |
 | Per-operation timeout / idle interval | 5 seconds / 7 seconds |
 | Outer client timeout | 35 seconds, with a shorter remote `timeout` wrapper |
-| Persistent report | `/home/operator/AI-tools/bench/strata-rdma-20261026/transport-tests.json` |
+| Persistent report | `$RPC_RESULTS_DIR/transport-tests.json` |
 
-The alias `coordinator.example` did not resolve in the validation environment. The
-explicit peer IP uses the already known SSH host key for that same host. Override
-`--remote`, `--host-key-alias`, IPs, ports, TLS directory and report path as needed;
-see `--help`. An empty `--host-key-alias ''` uses the target's own known-host entry.
-The native-only fixture owned by the other test task uses port 50068; this harness
-does not touch it. Run only one copy of this harness per selected port pair.
+Use the remote SSH alias already configured in your known_hosts. Override the test
+settings through CLI flags or the environment variables listed in [RPC_ENVIRONMENT.md](RPC_ENVIRONMENT.md).
 
 Cases cover a 32 MiB + 31 byte roundtrip, a 31-byte roundtrip, a seven-second idle
 interval, a TCP baseline, wrong client and server role certificates, both transport
@@ -207,8 +187,8 @@ the benchmark's starting conditions. It never starts or stops an inference servi
 
 ```sh
 python3 tools/rpc/verify_rdma_inference.py \
-  --base-url http://192.0.2.10:8080 \
-  --output /home/operator/AI-tools/bench/strata-rdma-20261026/inference-verification.json
+  --base-url $STRATA_RPC_COORDINATOR_URL \
+  --output $RPC_RESULTS_DIR/inference-verification.json
 ```
 
 It accepts either the server root or a URL ending in `/v1`. It discovers the model

@@ -44,7 +44,7 @@ def worker(metrics):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--base-url', required=True, help='Server root, e.g. http://192.0.2.10:8080 (or /v1)')
+    ap.add_argument('--base-url', required=True, help='Server root, e.g. http://127.0.0.1:8080 (or /v1)')
     ap.add_argument('--output', required=True, type=Path)
     ap.add_argument('--model', help='Defaults to first /v1/models entry')
     ap.add_argument('--api-key-env', default='STRATA_API_KEY')
@@ -57,7 +57,7 @@ def main():
     ap.add_argument('--expect-transport', choices=('rdma', 'tcp'), default='rdma')
     ap.add_argument('--cpu-worker-unit', default='strata-unsloth-q4-v023-rdma-worker.service')
     ap.add_argument('--cpu-coordinator-unit', default='strata-unsloth-q4-v023-rdma-coordinator.service')
-    ap.add_argument('--cpu-coordinator-ssh', default='coordinator.example')
+    ap.add_argument('--cpu-coordinator-ssh', default=os.environ.get('STRATA_RPC_REMOTE'))
     args = ap.parse_args()
     if min(args.timeout, args.cancel_wait, args.cancel_words, args.cache_words, args.max_output_tokens) <= 0:
         ap.error('timeouts, word counts and output token limit must be positive')
@@ -101,7 +101,7 @@ def main():
         """Read cumulative systemd cgroup CPU counters; never changes units."""
         result = {}
         for role, unit in [('worker', args.cpu_worker_unit), ('coordinator', args.cpu_coordinator_unit)]:
-            if not unit:
+            if not unit or (role == 'coordinator' and not args.cpu_coordinator_ssh):
                 continue
             cmd = ['systemctl', '--user', 'show', unit, '--property=CPUUsageNSec', '--property=ControlGroup']
             env = dict(os.environ)
