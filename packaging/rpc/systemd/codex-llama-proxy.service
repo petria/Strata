@@ -8,9 +8,8 @@ Wants=network-online.target
 WorkingDirectory=@WORKING_DIRECTORY@
 @ENVIRONMENT@
 ExecStart=@EXEC_START@
-Restart=on-failure
-RestartSec=15
-TimeoutStopSec=120
+Restart=always
+RestartSec=3
 LimitNOFILE=65536
 StandardOutput=@STDOUT@
 StandardError=@STDERR@

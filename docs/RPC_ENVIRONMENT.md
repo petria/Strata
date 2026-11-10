@@ -65,6 +65,7 @@ export STRATA_RPC_INTERFACE=eth1
 | `WORKER_CUDA_COMPILER`, `COORDINATOR_CUDA_COMPILER` | Corresponding CUDA root + `/bin/nvcc` |
 | `WORKER_CUDA_ARCH`, `COORDINATOR_CUDA_ARCH` | `86`, `120`; set for other GPUs |
 | `COORDINATOR_BIND`, `PROXY_BIND` | `127.0.0.1:8080`, `127.0.0.1:8081`; explicitly select LAN access |
+| `PROXY_STATS` | Coordinator home + `.local/state/codex-llama-proxy/stats.jsonl`; preserves proxy counter history across profile changes |
 | `MONITOR_ORIGINS` | JSON array of browser origins; defaults to coordinator and proxy URLs. Each becomes a separate `--origin` argument |
 | `BUILD_JOBS` | `6` |
 | `VISION_EXE` | Existing compatible vision-reader executable on the coordinator, copied into the new release before switching it |

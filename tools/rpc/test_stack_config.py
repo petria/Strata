@@ -73,6 +73,15 @@ class StackConfigurationTests(unittest.TestCase):
         self.assertIn('/worker-profile.json',unit)
         self.assertIn('worker space',unit)
 
+    def test_original_service_restart_logging_and_stats_defaults_preserved(self):
+        proxy=config.render_unit(self.cfg,'proxy')
+        self.assertIn('Restart=always',proxy)
+        self.assertIn('RestartSec=3',proxy)
+        self.assertIn('StandardOutput=journal',proxy)
+        self.assertIn('.local/state/codex-llama-proxy/stats.jsonl',proxy)
+        self.assertIn('StandardOutput=append:',config.render_unit(self.cfg,'worker'))
+        self.assertIn('RestartSec=3',config.render_unit(self.cfg,'relay'))
+
     def test_origins_are_separate_arguments(self):
         self.env['STRATA_RPC_MONITOR_ORIGINS']=json.dumps(['http://a.example:8180','http://b.example:8181'])
         cfg=config.configuration(self.env)

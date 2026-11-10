@@ -97,7 +97,7 @@ def configuration(env=None, root=ROOT):
         if urlsplit(origin).path:
             raise ValueError('monitor origins must not contain a URL path')
     result = {'remote': remote, 'base': base, 'profile': profile, 'api_url': api,
-              'proxy_url': proxy_url, 'worker_bind': worker_bind,
+              'proxy_url': proxy_url, 'proxy_stats': absolute(get('PROXY_STATS', home+'/.local/state/codex-llama-proxy/stats.jsonl')), 'worker_bind': worker_bind,
               'worker_monitor': worker_monitor, 'relay_bind': relay_bind,
               'monitor_url': url(get('MONITOR_URL')),
               'interface': get('INTERFACE'), 'origins': origins, 'hosts': {}}
@@ -196,7 +196,7 @@ def render_unit(config, kind, source=ROOT):
         args = [python, script+'strata_stage_rpc.py', 'coordinator', '--config', state+'/coordinator-profile.json', '--state-dir', state, '--host', addr.hostname, '--port', str(addr.port)]
         env['STRATA_API_KEY'] = 'none'
     elif kind == 'proxy':
-        args = [python, script+'codex_llama_proxy.py', '--listen', config['proxy_bind'], '--upstream', config['api_url'], '--stats-file', state+'/proxy-stats.jsonl', '--debug']
+        args = [python, script+'codex_llama_proxy.py', '--listen', config['proxy_bind'], '--upstream', config['api_url'], '--stats-file', config['proxy_stats'], '--debug']
     elif kind == 'worker-monitor':
         args = [python, script+'live_monitor.py', 'worker', '--listen', config['worker_monitor']]
     else:
@@ -206,8 +206,8 @@ def render_unit(config, kind, source=ROOT):
     values = {'WORKING_DIRECTORY': text(root).replace('%', '%%'),
               'ENVIRONMENT': '\n'.join('Environment='+unit_value(k+'='+v) for k,v in env.items()),
               'EXEC_START': ' '.join(unit_value(a, argv=True) for a in args),
-              'STDOUT': 'append:'+text(state).replace('%', '%%')+'/'+kind+'.log',
-              'STDERR': 'append:'+text(state).replace('%', '%%')+'/'+kind+'.log'}
+              'STDOUT': 'append:'+text(state).replace('%', '%%')+'/'+kind+'.log' if kind in ('worker','coordinator') else 'journal',
+              'STDERR': 'append:'+text(state).replace('%', '%%')+'/'+kind+'.log' if kind in ('worker','coordinator') else 'journal'}
     template = (Path(source)/'packaging/rpc/systemd'/SERVICES[kind]).read_text()
     for key, value in values.items():
         template = template.replace('@'+key+'@', value)
