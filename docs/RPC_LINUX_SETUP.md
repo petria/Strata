@@ -101,6 +101,8 @@ assets with your usual file-transfer tools or provision a suitable mount on each
 host. RPC transfers inference state, not model weight files. The Q8 profile's
 `*_NATIVE_ROOT` override and per-shard verification manifest need their own
 preparation; the Swift command above does not prepare Q8.
+For the optional `gyro-l-v0213` model, use the pinned file and packing steps in
+[RPC_GYRO_L.md](RPC_GYRO_L.md); the Swift setup command does not prepare Gyro-L.
 
 ## 3. Provision mutual TLS credentials
 

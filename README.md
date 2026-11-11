@@ -58,6 +58,11 @@ Different models, free VRAM and RAM can require different profile settings.
 The Q8 profile has separate mounted native-data requirements and a shard manifest;
 it is not a drop-in replacement for the Swift data directory.
 
+The optional [Gyro-L profile](docs/RPC_GYRO_L.md) uses AgentionAI's
+`Qwen3.8-Flash-Next-Gyro-L-TQ3_0.gguf`. Its two-host loading and inference checks
+passed at 64K, 128K and 256K context; this does not establish coding quality or
+full-context performance.
+
 ## Setup and operation
 
 1. Prepare Linux dependencies, SSH, model artifacts and TLS role credentials using

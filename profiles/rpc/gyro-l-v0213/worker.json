@@ -18,7 +18,7 @@
     "--spec-min-p",
     "0.5",
     "--max-context",
-    "65536",
+    "262144",
     "--kv",
     "int8",
     "--resident-experts",

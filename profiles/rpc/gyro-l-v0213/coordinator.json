@@ -20,7 +20,7 @@
     "--mtp",
     "$MODEL_DATA_ROOT/mtp/rt",
     "--max-context",
-    "65536",
+    "262144",
     "--kv",
     "int8",
     "--resident-experts",
