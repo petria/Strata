@@ -60,8 +60,11 @@ setup and [docs/RPC_ENVIRONMENT.md](docs/RPC_ENVIRONMENT.md) for configuration.
 - `origin` is the public fork; `upstream` is the original project. Keep fork `main`
   as an upstream mirror. Publish named custom branches, never private backup refs or
   `git push --all`. The fork landing branch is `rpc-v0.2.13`.
-- Rebase custom work onto an intentional upstream release with recovery copies
-  outside Git. Audit the current tree and custom history for personal configuration
-  before publication; use explicit force-with-lease expectations for a rewritten branch.
+- Before syncing this fork to an upstream release, follow
+  [docs/UPSTREAM_REBASE.md](docs/UPSTREAM_REBASE.md). Keep the rebase on the RPC
+  integration branch; do not deploy or restart the live stack as part of a source rebase.
+- Keep recovery copies outside Git. Audit the current tree and custom history for
+  personal configuration before publication; use explicit force-with-lease expectations
+  for a rewritten branch.
 - Maintain README, this file and the Linux/environment guides with setup changes.
   Preserve upstream attribution and the license.

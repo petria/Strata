@@ -100,6 +100,7 @@ preflight. Do not run activation against an in-use stack without authorization.
 - [Independent RPC Monitor telemetry](docs/RPC_LIVE_MONITOR.md)
 - [Conversation cache](docs/RPC_CONVERSATION_CACHE.md)
 - [Optional DFlash2 extension](docs/RPC_DFLASH2.md)
+- [Maintaining the fork and rebasing onto upstream releases](docs/UPSTREAM_REBASE.md)
 - [Contribution rules](CONTRIBUTING.md) and [MIT license](LICENSE)
 
 Strata's engine, server and original UI are the work of the upstream project and
