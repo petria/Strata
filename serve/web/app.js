@@ -235,14 +235,15 @@ let lastMetrics = null, metricsFailures = 0, keyWarned = false, mcpTick = 0;
 let metricsEpoch = 0;
 let liveWorkerOverlay = null, liveWorkerRequested = false;
 function updateLiveWorker(m) {
-  if (!(m.hardware?.gpus || []).some(g => g.source === "rpc-worker")) return;
   if (!liveWorkerRequested) {
     liveWorkerRequested = true;
     import("./rpc-live-config.js").then(async ({default: config}) => {
       if (!config.url) return;
       const module = await import("./rpc-live-monitor.js");
       liveWorkerOverlay = module.startLiveWorker(config.url);
-    }).catch(() => {}); // An unconfigured/single-host install keeps the normal monitor.
+    }).catch((error) => {
+      console.warn("Strata live monitor overlay could not start:", error);
+    }); // An unconfigured/single-host install keeps the normal monitor.
   }
   if (liveWorkerOverlay) liveWorkerOverlay(m);
 }
@@ -258,7 +259,7 @@ function metricsAgree(live, state) {
 async function poll() {
   const epoch = ++metricsEpoch;
   try {
-    const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {headers: headers()});
+    const r = await fetch(reqShowAll ? "metrics?requests=all" : "metrics", {cache: "no-store", headers: headers()});
     if (r.status === 401) {
       setPill("error", tr("pill.keyNeeded", "API key needed"));
       if (!keyWarned) { keyWarned = true; toast("warn", tr("pill.keyNeeded", "API key needed"), tr("toast.keyAbout", "This server needs a key: add it under About > Settings."), 6000); }
